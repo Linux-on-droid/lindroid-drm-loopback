@@ -13,10 +13,14 @@
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 
+#include <linux/version.h>
+
 #include <drm/drm_gem.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#if KERNEL_VERSION(6, 13, 0) <= LINUX_VERSION_CODE 
 #include <drm/drm_client_setup.h>
+#endif
 #include <drm/drm_drv.h>
 #include <drm/drm_fbdev_shmem.h>
 #include <drm/drm_file.h>
@@ -113,8 +117,9 @@ static const struct drm_driver vkms_driver = {
 	.release		= vkms_release,
 	.fops			= &vkms_driver_fops,
 	DRM_GEM_SHMEM_DRIVER_OPS,
+#if KERNEL_VERSION(6, 13, 0) <= LINUX_VERSION_CODE 
 	DRM_FBDEV_SHMEM_DRIVER_OPS,
-
+#endif
 	.name			= DRIVER_NAME,
 	.desc			= DRIVER_DESC,
 	.date			= DRIVER_DATE,
@@ -227,8 +232,11 @@ static int vkms_create(struct vkms_config *config)
 	if (ret)
 		goto out_devres;
 
+#if KERNEL_VERSION(6, 13, 0) <= LINUX_VERSION_CODE 
 	drm_client_setup(&vkms_device->drm, NULL);
-
+#else
+	drm_fbdev_shmem_setup(&vkms_device->drm, 0);
+#endif
 	return 0;
 
 out_devres:
