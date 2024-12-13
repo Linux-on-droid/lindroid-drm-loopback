@@ -89,7 +89,7 @@ int vkms_output_init(struct vkms_device *vkmsdev, int index)
 		return ret;
 
 	ret = drm_connector_init(dev, connector, &vkms_connector_funcs,
-				 DRM_MODE_CONNECTOR_VIRTUAL);
+				 DRM_MODE_CONNECTOR_HDMIA);
 	if (ret) {
 		DRM_ERROR("Failed to init connector\n");
 		return ret;
