@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-config DRM_VKMS
-	tristate "Virtual KMS (EXPERIMENTAL)"
+config DRM_LINDROID
+	tristate "Lindroid KMS (EXPERIMENTAL)"
 	depends on DRM && MMU
 	select DRM_CLIENT_SELECTION
 	select DRM_KMS_HELPER
@@ -9,8 +9,6 @@ config DRM_VKMS
 	select CRC32
 	default n
 	help
-	  Virtual Kernel Mode-Setting (VKMS) is used for testing or for
-	  running GPU in a headless machines. Choose this option to get
-	  a VKMS.
+	  Lindroid DRM implements a virtual dri interface for lindroid Linux-on-Android container solution
 
-	  If M is selected the module will be called vkms.
+	  If M is selected the module will be called lindroid_drm.

@@ -36,9 +36,9 @@
 #include <drm/drm_print.h>
 #include <drm/drm_debugfs.h>
 
-#define DRIVER_NAME	"vkms"
-#define DRIVER_DESC	"Virtual Kernel Mode Setting"
-#define DRIVER_DATE	"20180514"
+#define DRIVER_NAME	"lindroid_drm"
+#define DRIVER_DESC	"Lindroid DRM device"
+#define DRIVER_DATE	"NEVER"
 #define DRIVER_MAJOR	1
 #define DRIVER_MINOR	0
 
@@ -300,5 +300,6 @@ module_exit(vkms_exit);
 
 MODULE_AUTHOR("Haneen Mohammed <hamohammed.sa@gmail.com>");
 MODULE_AUTHOR("Rodrigo Siqueira <rodrigosiqueiramelo@gmail.com>");
+MODULE_AUTHOR("Luka Panio <lukapanio@gmail.com>");
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");

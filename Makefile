@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
-vkms-y := \
+lindroid_drm-y := \
 	vkms_drv.o \
 	vkms_plane.o \
 	vkms_output.o \
@@ -8,4 +8,6 @@ vkms-y := \
 	vkms_composer.o \
 	vkms_writeback.o
 
-obj-$(CONFIG_DRM_VKMS) += vkms.o
+CONFIG_DRM_LINDROID ?= m
+
+obj-$(CONFIG_DRM_LINDROID) += lindroid_drm.o
