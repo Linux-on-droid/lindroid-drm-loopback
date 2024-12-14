@@ -58,12 +58,18 @@ MODULE_PARM_DESC(enable_overlay, "Enable/Disable overlay support");
 
 DEFINE_DRM_GEM_FOPS(vkms_driver_fops);
 
+struct drm_ioctl_desc vkms_ioctls[] = {
+	DRM_IOCTL_DEF_DRV(VKMS_CREATE_OUTPUT, vkms_add_output_ioctl, VKMS_DRM_UNLOCKED),
+};
+
 static void vkms_release(struct drm_device *dev)
 {
 	struct vkms_device *vkms = drm_device_to_vkms_device(dev);
 
-	if (vkms->output.composer_workq)
-		destroy_workqueue(vkms->output.composer_workq);
+	for (unsigned int i = 0; i < vkms->num_outputs; i++) {
+	    if (vkms->outputs[i].composer_workq)
+	        destroy_workqueue(vkms->outputs[i].composer_workq);
+	}
 }
 
 static void vkms_atomic_commit_tail(struct drm_atomic_state *old_state)
@@ -120,6 +126,8 @@ static const struct drm_driver vkms_driver = {
 #if KERNEL_VERSION(6, 13, 0) <= LINUX_VERSION_CODE 
 	DRM_FBDEV_SHMEM_DRIVER_OPS,
 #endif
+	.ioctls = vkms_ioctls,
+	.num_ioctls = ARRAY_SIZE(vkms_ioctls),
 	.name			= DRIVER_NAME,
 	.desc			= DRIVER_DESC,
 	.date			= DRIVER_DATE,
@@ -205,6 +213,12 @@ static int vkms_create(struct vkms_config *config)
 	}
 	vkms_device->platform = pdev;
 	vkms_device->config = config;
+
+	vkms_device->outputs = kcalloc(MAX_OUTPUTS, sizeof(struct vkms_output), GFP_KERNEL);
+	if (!vkms_device->outputs)
+    		return -ENOMEM;
+	vkms_device->num_outputs = 0;
+
 	config->dev = vkms_device;
 
 	ret = dma_coerce_mask_and_coherent(vkms_device->drm.dev,

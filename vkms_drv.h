@@ -5,6 +5,8 @@
 
 #include <linux/hrtimer.h>
 
+#include <linux/version.h>
+
 #include <drm/drm.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem.h>
@@ -25,6 +27,14 @@
 
 #define VKMS_LUT_SIZE 256
 
+#define MAX_OUTPUTS 10
+
+#if KERNEL_VERSION(6, 8, 0) <= LINUX_VERSION_CODE
+#define VKMS_DRM_UNLOCKED 0
+#else
+#define VKMS_DRM_UNLOCKED DRM_UNLOCKED
+#endif
+	
 /**
  * struct vkms_frame_info - Structure to store the state of a frame
  *
@@ -178,7 +188,8 @@ struct vkms_config {
 struct vkms_device {
 	struct drm_device drm;
 	struct platform_device *platform;
-	struct vkms_output output;
+	struct vkms_output *outputs;
+	unsigned int num_outputs;
 	const struct vkms_config *config;
 };
 
@@ -217,6 +228,9 @@ int vkms_crtc_init(struct drm_device *dev, struct drm_crtc *crtc,
  */
 int vkms_output_init(struct vkms_device *vkmsdev, int index);
 
+int vkms_add_output_ioctl(struct drm_device *drm_dev, void *data,
+			       struct drm_file *file);
+
 /**
  * vkms_plane_init() - Initialize a plane
  *
@@ -243,5 +257,19 @@ void vkms_writeback_row(struct vkms_writeback_job *wb, const struct line_buffer 
 
 /* Writeback */
 int vkms_enable_writeback_connector(struct vkms_device *vkmsdev);
+
+// ioctl's
+struct drm_vkms_create_output {
+	uint32_t width;
+	uint32_t height;
+	uint32_t physical_width;
+	uint32_t physical_height;
+	uint32_t refreshrate;
+};
+
+#define DRM_VKMS_CREATE_OUTPUT          0x00
+
+#define DRM_IOCTL_VKMS_CREATE_OUTPUT DRM_IOWR(DRM_COMMAND_BASE +  \
+	DRM_VKMS_CREATE_OUTPUT, struct drm_vkms_create_output)
 
 #endif /* _VKMS_DRV_H_ */

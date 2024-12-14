@@ -4,7 +4,7 @@
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_probe_helper.h>
-
+#include <drm/drm_drv.h>
 static const struct drm_connector_funcs vkms_connector_funcs = {
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.destroy = drm_connector_cleanup,
@@ -49,7 +49,7 @@ static int vkms_add_overlay_plane(struct vkms_device *vkmsdev, int index,
 
 int vkms_output_init(struct vkms_device *vkmsdev, int index)
 {
-	struct vkms_output *output = &vkmsdev->output;
+	struct vkms_output *output = &vkmsdev->outputs[0];
 	struct drm_device *dev = &vkmsdev->drm;
 	struct drm_connector *connector = &output->connector;
 	struct drm_encoder *encoder = &output->encoder;
@@ -59,42 +59,48 @@ int vkms_output_init(struct vkms_device *vkmsdev, int index)
 	int writeback;
 	unsigned int n;
 
+for(int i=0; i < MAX_OUTPUTS; i++){
+	output = &vkmsdev->outputs[i];
+	crtc = &output->crtc;
+	connector = &output->connector;
+	encoder = &output->encoder;
 	/*
 	 * Initialize used plane. One primary plane is required to perform the composition.
 	 *
 	 * The overlay and cursor planes are not mandatory, but can be used to perform complex
 	 * composition.
 	 */
-	primary = vkms_plane_init(vkmsdev, DRM_PLANE_TYPE_PRIMARY, index);
+	 printk("Creating output: %d\n", i);
+	primary = vkms_plane_init(vkmsdev, DRM_PLANE_TYPE_PRIMARY, i);
 	if (IS_ERR(primary))
 		return PTR_ERR(primary);
 
 	if (vkmsdev->config->overlay) {
 		for (n = 0; n < NUM_OVERLAY_PLANES; n++) {
-			ret = vkms_add_overlay_plane(vkmsdev, index, crtc);
+			ret = vkms_add_overlay_plane(vkmsdev, i, crtc);
 			if (ret)
 				return ret;
 		}
 	}
 
 	if (vkmsdev->config->cursor) {
-		cursor = vkms_plane_init(vkmsdev, DRM_PLANE_TYPE_CURSOR, index);
+		cursor = vkms_plane_init(vkmsdev, DRM_PLANE_TYPE_CURSOR, i);
 		if (IS_ERR(cursor))
 			return PTR_ERR(cursor);
 	}
-
+printk("Creating output: %d planes done\n", i);
 	/* [1]: Allocation of a CRTC, its index will be BIT(0) = 1 */
 	ret = vkms_crtc_init(dev, crtc, &primary->base, &cursor->base);
 	if (ret)
 		return ret;
-
+printk("Creating output: %d crtc done\n", i);
 	ret = drm_connector_init(dev, connector, &vkms_connector_funcs,
-				 DRM_MODE_CONNECTOR_HDMIA);
+				 DRM_MODE_CONNECTOR_DisplayPort);
 	if (ret) {
 		DRM_ERROR("Failed to init connector\n");
 		return ret;
 	}
-
+printk("Creating output: %d connector init done\n", i);
 	drm_connector_helper_add(connector, &vkms_conn_helper_funcs);
 
 	ret = drm_encoder_init(dev, encoder, &vkms_encoder_funcs,
@@ -103,24 +109,20 @@ int vkms_output_init(struct vkms_device *vkmsdev, int index)
 		DRM_ERROR("Failed to init encoder\n");
 		goto err_encoder;
 	}
+	printk("Creating output: %d connector done\n", i);
 	/*
 	 * This is a hardcoded value to select crtc for the encoder.
 	 * BIT(0) here designate the first registered CRTC, the one allocated in [1]
 	 */
-	encoder->possible_crtcs = BIT(0);
+	encoder->possible_crtcs = BIT(i);
 
 	ret = drm_connector_attach_encoder(connector, encoder);
 	if (ret) {
 		DRM_ERROR("Failed to attach connector to encoder\n");
 		goto err_attach;
 	}
-
-	if (vkmsdev->config->writeback) {
-		writeback = vkms_enable_writeback_connector(vkmsdev);
-		if (writeback)
-			DRM_ERROR("Failed to init writeback connector\n");
-	}
-
+		 printk("Done creating output: %d\n", i);
+}
 	drm_mode_config_reset(dev);
 
 	return 0;
@@ -132,4 +134,12 @@ err_encoder:
 	drm_connector_cleanup(connector);
 
 	return ret;
+}
+
+int vkms_add_output_ioctl(struct drm_device *drm_dev, void *data,
+			       struct drm_file *file)
+{
+// TBD: Handle setting mode and connecting display when reqested
+	return 0;
+
 }

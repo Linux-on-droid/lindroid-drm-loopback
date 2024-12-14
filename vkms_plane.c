@@ -200,20 +200,23 @@ static const struct drm_plane_helper_funcs vkms_plane_helper_funcs = {
 struct vkms_plane *vkms_plane_init(struct vkms_device *vkmsdev,
 				   enum drm_plane_type type, int index)
 {
+printk("vkms_plane_init 1 index: %d\n", index);
 	struct drm_device *dev = &vkmsdev->drm;
 	struct vkms_plane *plane;
 
-	plane = drmm_universal_plane_alloc(dev, struct vkms_plane, base, 1 << index,
+	plane = drmm_universal_plane_alloc(dev, struct vkms_plane, base, 0,
 					   &vkms_plane_funcs,
 					   vkms_formats, ARRAY_SIZE(vkms_formats),
 					   NULL, type, NULL);
+	printk("vkms_plane_init 2\n");
 	if (IS_ERR(plane))
 		return plane;
 
 	drm_plane_helper_add(&plane->base, &vkms_plane_helper_funcs);
-
+printk("vkms_plane_init 3\n");
 	drm_plane_create_rotation_property(&plane->base, DRM_MODE_ROTATE_0,
 					   DRM_MODE_ROTATE_MASK | DRM_MODE_REFLECT_MASK);
+					   printk("vkms_plane_init 4\n");
 
 	return plane;
 }

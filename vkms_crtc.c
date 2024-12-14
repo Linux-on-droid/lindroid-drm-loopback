@@ -85,8 +85,21 @@ static bool vkms_get_vblank_timestamp(struct drm_crtc *crtc,
 {
 	struct drm_device *dev = crtc->dev;
 	struct vkms_device *vkmsdev = drm_device_to_vkms_device(dev);
-	struct vkms_output *output = &vkmsdev->output;
+	struct vkms_output *output = NULL;
 	struct drm_vblank_crtc *vblank = drm_crtc_vblank_crtc(crtc);
+
+	/* Find the output associated with this CRTC */
+	for (unsigned int i = 0; i < vkmsdev->num_outputs; i++) {
+		if (vkmsdev->outputs[i].crtc.index == crtc->index) {
+			output = &vkmsdev->outputs[i];
+			break;
+		}
+	}
+
+	if (!output) {
+		DRM_ERROR("CRTC does not match any output");
+		return false;
+	}
 
 	if (!READ_ONCE(vblank->enabled)) {
 		*vblank_time = ktime_get();
