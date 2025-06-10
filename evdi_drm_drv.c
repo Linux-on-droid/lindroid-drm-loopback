@@ -40,6 +40,10 @@
 #define EVDI_DRM_UNLOCKED DRM_UNLOCKED
 #endif
 
+#ifdef CONFIG_DRM_LINDROID_EVDI_MODULE
+MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
+#endif
+
 static struct drm_driver driver;
 int evdi_swap_callback_ioctl(struct drm_device *drm_dev, void *data,
                     struct drm_file *file);
