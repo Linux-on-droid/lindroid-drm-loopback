@@ -22,6 +22,7 @@
 #include "evdi_drm_drv.h"
 #include "evdi_cursor.h"
 #include "evdi_params.h"
+#include <linux/atomic.h>
 #include <linux/mutex.h>
 #include <linux/compiler.h>
 #include <linux/platform_device.h>
@@ -773,6 +774,9 @@ evdi_painter_connect(struct evdi_device *evdi,
 
 	painter_unlock(painter);
 
+	if (evdi)
+		atomic_set(&evdi->poll_stopping, 0);
+
 	EVDI_INFO("(card%d) Connected with %s\n", evdi->dev_index, buf);
 
 	drm_helper_hpd_irq_event(evdi->ddev);
@@ -816,6 +820,12 @@ static int evdi_painter_disconnect(struct evdi_device *evdi,
 	evdi->cursor_events_enabled = false;
 
 	painter_unlock(painter);
+
+	if (evdi) {
+		atomic_set(&evdi->poll_stopping, 1);
+		wake_up_all(&evdi->poll_ioct_wq);
+		wake_up_all(&evdi->poll_response_ioct_wq);
+	}
 
 	drm_helper_hpd_irq_event(evdi->ddev);
 	return 0;

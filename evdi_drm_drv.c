@@ -17,6 +17,8 @@
 #include <linux/fdtable.h>
 #include <linux/fs.h>
 #include <linux/version.h>
+#include <linux/sched/signal.h>
+#include <linux/wait.h>
 #if KERNEL_VERSION(5, 16, 0) <= LINUX_VERSION_CODE || defined(EL8) || defined(EL9)
 #include <drm/drm_ioctl.h>
 #include <drm/drm_file.h>
@@ -582,7 +584,7 @@ int evdi_gbm_add_buf_ioctl(struct drm_device *dev, void *data,
 		return -ENOMEM;
 
 	wake_up(&evdi->poll_ioct_wq);
-	ret = wait_event_killable_timeout(event->wait, event->completed, EVDI_WAIT_TIMEOUT);
+	ret = wait_event_interruptible_timeout(event->wait, event->completed, EVDI_WAIT_TIMEOUT);
 	if (ret == 0) {
 		EVDI_ERROR("evdi_gbm_add_buf_ioctl: wait timed out\n");
 		for (i = 0; i < numFds; i++) {
@@ -651,7 +653,7 @@ int evdi_gbm_get_buf_ioctl(struct drm_device *dev, void *data,
 		return -ENOMEM;
 
 	wake_up(&evdi->poll_ioct_wq);
-	ret = wait_event_killable_timeout(event->wait, event->completed, EVDI_WAIT_TIMEOUT);
+	ret = wait_event_interruptible_timeout(event->wait, event->completed, EVDI_WAIT_TIMEOUT);
 	if (ret == 0) {
 		EVDI_ERROR("evdi_gbm_get_buf_ioctl: wait timed out\n");
 		goto err_event;
@@ -754,7 +756,7 @@ int evdi_gbm_del_buf_ioctl(struct drm_device *dev, void *data,
 		return -ENOMEM;
 
 	wake_up(&evdi->poll_ioct_wq);
-	ret = wait_event_killable_timeout(event->wait, event->completed, EVDI_WAIT_TIMEOUT);
+	ret = wait_event_interruptible_timeout(event->wait, event->completed, EVDI_WAIT_TIMEOUT);
 	if (ret == 0) {
 		EVDI_ERROR("evdi_gbm_del_buf_ioctl: wait timed out\n");
 		ret = -ETIMEDOUT;
@@ -790,7 +792,7 @@ int evdi_gbm_create_buff (struct drm_device *dev, void *data,
 		return -ENOMEM;
 
 	wake_up(&evdi->poll_ioct_wq);
-	ret = wait_event_killable_timeout(event->wait, event->completed, EVDI_WAIT_TIMEOUT);
+	ret = wait_event_interruptible_timeout(event->wait, event->completed, EVDI_WAIT_TIMEOUT);
 	if (ret == 0) {
 		EVDI_ERROR("evdi_gbm_create_buff: wait timed out\n");
 		goto err_event;
@@ -848,12 +850,17 @@ int evdi_poll_ioctl(struct drm_device *drm_dev, void *data,
 		return -ENODEV;
 	}
 
-	ret = wait_event_killable(evdi->poll_ioct_wq, !list_empty(&evdi->event_queue));
-
+	ret = wait_event_interruptible(evdi->poll_ioct_wq,
+				  atomic_read(&evdi->poll_stopping) ||
+				  !list_empty(&evdi->event_queue));
 	if (ret < 0) {
 		EVDI_ERROR("evdi_poll_ioctl: Wait interrupted by signal\n");
 		return ret;
 	}
+
+	//If woken when stopping, interrupt
+	if (unlikely(atomic_read(&evdi->poll_stopping)))
+		return -EINTR;
 
 	mutex_lock(&evdi->event_lock);
 
@@ -993,6 +1000,7 @@ static int evdi_drm_device_init(struct drm_device *dev)
 	evdi->poll_event = none;
 	init_waitqueue_head (&evdi->poll_ioct_wq);
 	init_waitqueue_head (&evdi->poll_response_ioct_wq);
+	atomic_set(&evdi->poll_stopping, 0);
 	mutex_init(&evdi->poll_lock);
 	init_completion(&evdi->poll_completion);
 	evdi->poll_data_size = -1;
@@ -1039,6 +1047,10 @@ int evdi_driver_open(struct drm_device *dev, __always_unused struct drm_file *fi
 	char buf[100];
 
 	evdi_log_process(buf, sizeof(buf));
+	if (dev && dev->dev_private) {
+		struct evdi_device *evdi = dev->dev_private;
+		atomic_set(&evdi->poll_stopping, 0);
+	}
 	EVDI_INFO("(card%d) Opened by %s\n", dev->primary->index, buf);
 	return 0;
 }
@@ -1054,6 +1066,12 @@ static void evdi_driver_close(struct drm_device *drm_dev, struct drm_file *file)
 
 void evdi_driver_preclose(struct drm_device *drm_dev, struct drm_file *file)
 {
+	struct evdi_device *evdi = drm_dev->dev_private;
+	if (evdi) {
+		atomic_set(&evdi->poll_stopping, 1);
+		wake_up_all(&evdi->poll_ioct_wq);
+		wake_up_all(&evdi->poll_response_ioct_wq);
+	}
 	evdi_driver_close(drm_dev, file);
 }
 
