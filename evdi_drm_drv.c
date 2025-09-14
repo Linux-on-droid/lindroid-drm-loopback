@@ -19,6 +19,7 @@
 #include <linux/version.h>
 #include <linux/sched/signal.h>
 #include <linux/wait.h>
+#include <linux/slab.h>
 #if KERNEL_VERSION(5, 16, 0) <= LINUX_VERSION_CODE || defined(EL8) || defined(EL9)
 #include <drm/drm_ioctl.h>
 #include <drm/drm_file.h>
@@ -79,6 +80,9 @@ int evdi_gbm_create_buff(struct drm_device *dev, void *data,
 
 int evdi_create_buff_callback_ioctl(struct drm_device *drm_dev, void *data,
                     struct drm_file *file);
+
+static struct kmem_cache *evdi_event_cache;
+static atomic_t evdi_event_cache_users = ATOMIC_INIT(0);
 
 struct drm_ioctl_desc evdi_painter_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(EVDI_CONNECT, evdi_painter_connect_ioctl, EVDI_DRM_UNLOCKED),
@@ -254,7 +258,9 @@ static struct drm_driver driver = {
 
 struct evdi_event *evdi_create_event(struct evdi_device *evdi, enum poll_event_type type, void *data)
 {
-	struct evdi_event *event = kzalloc(sizeof(*event), GFP_KERNEL);
+	struct evdi_event *event;
+
+	event = kmem_cache_zalloc(evdi_event_cache, GFP_KERNEL);
 	if (!event)
 		return NULL;
 
@@ -264,28 +270,49 @@ struct evdi_event *evdi_create_event(struct evdi_device *evdi, enum poll_event_t
 	event->completed = false;
 	event->evdi = evdi;
 
-	mutex_lock(&evdi->event_lock);
-
-	event->poll_id = atomic_fetch_inc(&evdi->next_event_id);
 	idr_preload(GFP_KERNEL);
-	{
-		int ret = idr_alloc(&evdi->event_idr, event,
-				    event->poll_id, event->poll_id + 1, GFP_NOWAIT);
-		if (ret < 0) {
-			idr_preload_end();
-			mutex_unlock(&evdi->event_lock);
-			kfree(event);
-			return NULL;
-		}
+	mutex_lock(&evdi->event_lock);
+	event->poll_id = atomic_fetch_inc(&evdi->next_event_id);
+	if (idr_alloc(&evdi->event_idr, event,
+		      event->poll_id, event->poll_id + 1, GFP_NOWAIT) < 0) {
+		mutex_unlock(&evdi->event_lock);
+		idr_preload_end();
+		kmem_cache_free(evdi_event_cache, event);
+		return NULL;
 	}
+	list_add_tail(&event->list, &evdi->event_queue);
+	mutex_unlock(&evdi->event_lock);
 	idr_preload_end();
 
-	list_add_tail(&event->list, &evdi->event_queue);
-
-	mutex_unlock(&evdi->event_lock);
 	return event;
 }
 
+void evdi_event_free(struct evdi_event *event)
+{
+	if (event)
+		kmem_cache_free(evdi_event_cache, event);
+}
+
+static int evdi_event_cache_get(void)
+{
+	if (!evdi_event_cache) {
+		evdi_event_cache = kmem_cache_create("evdi_event",
+						     sizeof(struct evdi_event),
+						     0, SLAB_HWCACHE_ALIGN, NULL);
+		if (!evdi_event_cache)
+			return -ENOMEM;
+	}
+	atomic_inc(&evdi_event_cache_users);
+	return 0;
+}
+
+static void evdi_event_cache_put(void)
+{
+	if (atomic_dec_and_test(&evdi_event_cache_users) && evdi_event_cache) {
+		kmem_cache_destroy(evdi_event_cache);
+		evdi_event_cache = NULL;
+	}
+}
 
 int evdi_swap_callback_ioctl(struct drm_device *drm_dev, void *data,
                     struct drm_file *file)
@@ -619,7 +646,7 @@ int evdi_gbm_add_buf_ioctl(struct drm_device *dev, void *data,
 	mutex_lock(&evdi->event_lock);
 	idr_remove(&evdi->event_idr, event->poll_id);
 	mutex_unlock(&evdi->event_lock);
-	kfree(event);
+	evdi_event_free(event);
 	EVDI_SAFE_KFREE(installed_fd_tmps);
 	return 0;
 
@@ -631,7 +658,7 @@ int evdi_gbm_add_buf_ioctl(struct drm_device *dev, void *data,
 	mutex_lock(&evdi->event_lock);
 	idr_remove(&evdi->event_idr, event->poll_id);
 	mutex_unlock(&evdi->event_lock);
-	kfree(event);
+	evdi_event_free(event);
 	EVDI_SAFE_KFREE(installed_fd_tmps);
 	return ret ? ret : -ETIMEDOUT;
 }
@@ -718,7 +745,7 @@ int evdi_gbm_get_buf_ioctl(struct drm_device *dev, void *data,
 	mutex_lock(&evdi->event_lock);
 	idr_remove(&evdi->event_idr, event->poll_id);
 	mutex_unlock(&evdi->event_lock);
-	kfree(event);
+	evdi_event_free(event);
 	EVDI_SAFE_KFREE(installed_fds);
 
 	return 0;
@@ -738,7 +765,7 @@ err_event:
 	mutex_lock(&evdi->event_lock);
 	idr_remove(&evdi->event_idr, event->poll_id);
 	mutex_unlock(&evdi->event_lock);
-	kfree(event);
+	evdi_event_free(event);
 	EVDI_SAFE_KFREE(installed_fds);
 	return ret ? ret : -ETIMEDOUT;
 }
@@ -775,7 +802,7 @@ int evdi_gbm_del_buf_ioctl(struct drm_device *dev, void *data,
 	mutex_lock(&evdi->event_lock);
 	idr_remove(&evdi->event_idr, event->poll_id);
 	mutex_unlock(&evdi->event_lock);
-	kfree(event);
+	evdi_event_free(event);
 
 	return ret > 0 ? 0 : ret;
 }
@@ -818,7 +845,7 @@ int evdi_gbm_create_buff (struct drm_device *dev, void *data,
 	idr_remove(&evdi->event_idr, event->poll_id);
 	mutex_unlock(&evdi->event_lock);
 	kfree(cb_cmd);
-	kfree(event);
+	evdi_event_free(event);
 
 	return 0;
 
@@ -828,7 +855,7 @@ err_event:
 	mutex_unlock(&evdi->event_lock);
 	if (event->reply_data)
 		kfree(event->reply_data);
-	kfree(event);
+	evdi_event_free(event);
 	return ret ? ret : -ETIMEDOUT;
 }
 
@@ -979,6 +1006,7 @@ static void evdi_drm_device_release_cb(__always_unused struct drm_device *dev,
 	kfree(evdi);
 	dev->dev_private = NULL;
 	EVDI_INFO("Evdi drm_device removed.\n");
+	evdi_event_cache_put();
 
 	EVDI_TEST_HOOK(evdi_testhook_drm_device_destroyed());
 }
@@ -1004,6 +1032,10 @@ static int evdi_drm_device_init(struct drm_device *dev)
 	mutex_init(&evdi->poll_lock);
 	init_completion(&evdi->poll_completion);
 	evdi->poll_data_size = -1;
+
+	ret = evdi_event_cache_get();
+	if (ret)
+		goto err_free;
 
 	mutex_init(&evdi->event_lock);
 	INIT_LIST_HEAD(&evdi->event_queue);

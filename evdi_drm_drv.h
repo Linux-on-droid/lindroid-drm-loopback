@@ -257,4 +257,5 @@ void evdi_painter_force_full_modeset(struct evdi_painter *painter);
 struct drm_clip_rect evdi_painter_framebuffer_size(struct evdi_painter *painter);
 
 int evdi_fb_get_bpp(uint32_t format);
+void evdi_event_free(struct evdi_event *e);
 #endif

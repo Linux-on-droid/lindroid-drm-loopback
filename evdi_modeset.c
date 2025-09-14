@@ -256,7 +256,7 @@ int evdi_atomic_helper_page_flip(struct drm_crtc *crtc,
 	mutex_lock(&evdi->event_lock);
 	idr_remove(&evdi->event_idr, ev_event->poll_id);
 	mutex_unlock(&evdi->event_lock);
-	kfree(ev_event);
+	evdi_event_free(ev_event);
 
 	evdi_painter_send_vblank(evdi->painter);
 
