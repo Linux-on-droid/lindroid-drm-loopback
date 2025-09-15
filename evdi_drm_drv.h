@@ -67,7 +67,7 @@ struct evdi_device {
 	struct completion poll_completion;
 	int last_buf_add_id;
 	void *last_got_buff;
-	struct mutex event_lock;
+	spinlock_t event_lock;
 	struct list_head event_queue;
 	struct idr event_idr;
 	atomic_t next_event_id;

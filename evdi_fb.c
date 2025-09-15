@@ -217,9 +217,9 @@ static void evdi_user_framebuffer_destroy(struct drm_framebuffer *fb)
 		return;
 	}
 
-	mutex_lock(&evdi->event_lock);
+	spin_lock(&evdi->event_lock);
 	idr_remove(&evdi->event_idr, event->poll_id);
-	mutex_unlock(&evdi->event_lock);
+	spin_unlock(&evdi->event_lock);
 	evdi_event_free(event);
 
 	kfree(efb);

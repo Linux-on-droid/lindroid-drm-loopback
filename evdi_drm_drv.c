@@ -271,17 +271,17 @@ struct evdi_event *evdi_create_event(struct evdi_device *evdi, enum poll_event_t
 	event->evdi = evdi;
 
 	idr_preload(GFP_KERNEL);
-	mutex_lock(&evdi->event_lock);
+	spin_lock(&evdi->event_lock);
 	event->poll_id = atomic_fetch_inc(&evdi->next_event_id);
 	if (idr_alloc(&evdi->event_idr, event,
 		      event->poll_id, event->poll_id + 1, GFP_NOWAIT) < 0) {
-		mutex_unlock(&evdi->event_lock);
+		spin_unlock(&evdi->event_lock);
 		idr_preload_end();
 		kmem_cache_free(evdi_event_cache, event);
 		return NULL;
 	}
 	list_add_tail(&event->list, &evdi->event_queue);
-	mutex_unlock(&evdi->event_lock);
+	spin_unlock(&evdi->event_lock);
 	idr_preload_end();
 
 	return event;
@@ -321,9 +321,9 @@ int evdi_swap_callback_ioctl(struct drm_device *drm_dev, void *data,
 	struct drm_evdi_add_buff_callabck *cmd = data;
 	struct evdi_event *event;
 
-	mutex_lock(&evdi->event_lock);
+	spin_lock(&evdi->event_lock);
 	event = idr_find(&evdi->event_idr, cmd->poll_id);
-	mutex_unlock(&evdi->event_lock);
+	spin_unlock(&evdi->event_lock);
 
 	if (!event)
 		return -EINVAL;
@@ -342,9 +342,9 @@ int evdi_add_buff_callback_ioctl(struct drm_device *drm_dev, void *data,
 	struct evdi_event *event;
 	int *buff_id_ptr;
 
-	mutex_lock(&evdi->event_lock);
+	spin_lock(&evdi->event_lock);
 	event = idr_find(&evdi->event_idr, cmd->poll_id);
-	mutex_unlock(&evdi->event_lock);
+	spin_unlock(&evdi->event_lock);
 
 	if (!event)
 		return -EINVAL;
@@ -371,9 +371,9 @@ int evdi_get_buff_callback_ioctl(struct drm_device *drm_dev, void *data,
 	int *fd_ints = NULL;
 	int i;
 
-	mutex_lock(&evdi->event_lock);
+	spin_lock(&evdi->event_lock);
 	event = idr_find(&evdi->event_idr, cmd->poll_id);
-	mutex_unlock(&evdi->event_lock);
+	spin_unlock(&evdi->event_lock);
 
 	if (!event)
 		return -EINVAL;
@@ -457,9 +457,9 @@ int evdi_destroy_buff_callback_ioctl(struct drm_device *drm_dev, void *data,
 	struct evdi_device *evdi = drm_dev->dev_private;
 	struct drm_evdi_add_buff_callabck *cmd = data;
 	struct evdi_event *event;
-	mutex_lock(&evdi->event_lock);
+	spin_lock(&evdi->event_lock);
 	event = idr_find(&evdi->event_idr, cmd->poll_id);
-	mutex_unlock(&evdi->event_lock);
+	spin_unlock(&evdi->event_lock);
 	if (!event) {
 		EVDI_ERROR("evdi_destroy_buff_callback_ioctl: event is null\n");
 		return -EINVAL;
@@ -481,9 +481,9 @@ int evdi_create_buff_callback_ioctl(struct drm_device *drm_dev, void *data,
 	if (!buf)
 		return -ENOMEM;
 
-	mutex_lock(&evdi->event_lock);
+	spin_lock(&evdi->event_lock);
 	event = idr_find(&evdi->event_idr, cmd->poll_id);
-	mutex_unlock(&evdi->event_lock);
+	spin_unlock(&evdi->event_lock);
 
 	if (!event) {
 		kfree(buf);
@@ -647,9 +647,9 @@ int evdi_gbm_add_buf_ioctl(struct drm_device *dev, void *data,
 		kfree(event->reply_data);
 		event->reply_data = NULL;
 	}
-	mutex_lock(&evdi->event_lock);
+	spin_lock(&evdi->event_lock);
 	idr_remove(&evdi->event_idr, event->poll_id);
-	mutex_unlock(&evdi->event_lock);
+	spin_unlock(&evdi->event_lock);
 	evdi_event_free(event);
 	EVDI_SAFE_KFREE(installed_fd_tmps);
 	return 0;
@@ -659,9 +659,9 @@ int evdi_gbm_add_buf_ioctl(struct drm_device *dev, void *data,
 	return -EINVAL;
 
  err_event:
-	mutex_lock(&evdi->event_lock);
+	spin_lock(&evdi->event_lock);
 	idr_remove(&evdi->event_idr, event->poll_id);
-	mutex_unlock(&evdi->event_lock);
+	spin_unlock(&evdi->event_lock);
 	evdi_event_free(event);
 	EVDI_SAFE_KFREE(installed_fd_tmps);
 	return ret ? ret : -ETIMEDOUT;
@@ -746,9 +746,9 @@ int evdi_gbm_get_buf_ioctl(struct drm_device *dev, void *data,
 		kfree(gralloc_buf_tmp);
 		event->reply_data = NULL;
 	}
-	mutex_lock(&evdi->event_lock);
+	spin_lock(&evdi->event_lock);
 	idr_remove(&evdi->event_idr, event->poll_id);
-	mutex_unlock(&evdi->event_lock);
+	spin_unlock(&evdi->event_lock);
 	evdi_event_free(event);
 	EVDI_SAFE_KFREE(installed_fds);
 
@@ -766,9 +766,9 @@ err_event:
 		kfree(gralloc_buf_tmp);
 		event->reply_data = NULL;
 	}
-	mutex_lock(&evdi->event_lock);
+	spin_lock(&evdi->event_lock);
 	idr_remove(&evdi->event_idr, event->poll_id);
-	mutex_unlock(&evdi->event_lock);
+	spin_unlock(&evdi->event_lock);
 	evdi_event_free(event);
 	EVDI_SAFE_KFREE(installed_fds);
 	return ret ? ret : -ETIMEDOUT;
@@ -803,9 +803,9 @@ int evdi_gbm_del_buf_ioctl(struct drm_device *dev, void *data,
 		}
 	}
 
-	mutex_lock(&evdi->event_lock);
+	spin_lock(&evdi->event_lock);
 	idr_remove(&evdi->event_idr, event->poll_id);
-	mutex_unlock(&evdi->event_lock);
+	spin_unlock(&evdi->event_lock);
 	evdi_event_free(event);
 
 	return ret > 0 ? 0 : ret;
@@ -845,18 +845,18 @@ int evdi_gbm_create_buff (struct drm_device *dev, void *data,
 		goto err_event;
 	}
 
-	mutex_lock(&evdi->event_lock);
+	spin_lock(&evdi->event_lock);
 	idr_remove(&evdi->event_idr, event->poll_id);
-	mutex_unlock(&evdi->event_lock);
+	spin_unlock(&evdi->event_lock);
 	kfree(cb_cmd);
 	evdi_event_free(event);
 
 	return 0;
 
 err_event:
-	mutex_lock(&evdi->event_lock);
+	spin_lock(&evdi->event_lock);
 	idr_remove(&evdi->event_idr, event->poll_id);
-	mutex_unlock(&evdi->event_lock);
+	spin_unlock(&evdi->event_lock);
 	if (event->reply_data)
 		kfree(event->reply_data);
 	evdi_event_free(event);
@@ -893,17 +893,17 @@ int evdi_poll_ioctl(struct drm_device *drm_dev, void *data,
 	if (unlikely(atomic_read(&evdi->poll_stopping)))
 		return -EINTR;
 
-	mutex_lock(&evdi->event_lock);
+	spin_lock(&evdi->event_lock);
 
 	if (list_empty(&evdi->event_queue)) {
-		mutex_unlock(&evdi->event_lock);
+		spin_unlock(&evdi->event_lock);
 		return -EAGAIN;
 	}
 
 	event = list_first_entry(&evdi->event_queue, struct evdi_event, list);
 	list_del(&event->list);
 
-	mutex_unlock(&evdi->event_lock);
+	spin_unlock(&evdi->event_lock);
 
 	cmd->event = event->type;
 	cmd->poll_id = event->poll_id;
@@ -1041,7 +1041,7 @@ static int evdi_drm_device_init(struct drm_device *dev)
 	if (ret)
 		goto err_free;
 
-	mutex_init(&evdi->event_lock);
+	spin_lock_init(&evdi->event_lock);
 	INIT_LIST_HEAD(&evdi->event_queue);
 	idr_init(&evdi->event_idr);
 	atomic_set(&evdi->next_event_id, 1);
