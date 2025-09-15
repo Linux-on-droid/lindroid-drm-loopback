@@ -477,14 +477,18 @@ int evdi_create_buff_callback_ioctl(struct drm_device *drm_dev, void *data,
 	struct evdi_device *evdi = drm_dev->dev_private;
 	struct drm_evdi_create_buff_callabck *cmd = data;
 	struct evdi_event *event;
-	struct drm_evdi_create_buff_callabck *buf = kzalloc(sizeof(struct drm_evdi_create_buff_callabck), GFP_KERNEL);
-	memcpy(buf, data, sizeof(struct drm_evdi_create_buff_callabck));
+	struct drm_evdi_create_buff_callabck *buf = kmemdup(data, sizeof(*buf), GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
 	mutex_lock(&evdi->event_lock);
 	event = idr_find(&evdi->event_idr, cmd->poll_id);
 	mutex_unlock(&evdi->event_lock);
 
-	if (!event)
+	if (!event) {
+		kfree(buf);
 		return -EINVAL;
+	}
 
 	event->result = 0;
 	event->completed = true;
