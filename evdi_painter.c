@@ -24,6 +24,7 @@
 #include "evdi_params.h"
 #include <linux/atomic.h>
 #include <linux/mutex.h>
+#include <linux/slab.h>
 #include <linux/compiler.h>
 #include <linux/platform_device.h>
 #include <linux/completion.h>
@@ -72,6 +73,134 @@ struct evdi_event_crtc_state_pending {
 	struct drm_pending_event base;
 	struct drm_evdi_event_crtc_state crtc_state;
 };
+
+static struct kmem_cache *evdi_painter_ev_update_ready_cache;
+static struct kmem_cache *evdi_painter_ev_cursor_set_cache;
+static struct kmem_cache *evdi_painter_ev_cursor_move_cache;
+static struct kmem_cache *evdi_painter_ev_dpms_cache;
+static struct kmem_cache *evdi_painter_ev_mode_changed_cache;
+static atomic_t evdi_painter_event_cache_users = ATOMIC_INIT(0);
+
+static int evdi_painter_event_cache_get(void)
+{
+	if (!evdi_painter_ev_update_ready_cache) {
+		evdi_painter_ev_update_ready_cache =
+			kmem_cache_create("evdi_ev_update_ready",
+					  sizeof(struct evdi_event_update_ready_pending),
+					  0, SLAB_HWCACHE_ALIGN, NULL);
+		if (!evdi_painter_ev_update_ready_cache)
+			goto err;
+
+		evdi_painter_ev_cursor_set_cache =
+			kmem_cache_create("evdi_ev_cursor_set",
+					  sizeof(struct evdi_event_cursor_set_pending),
+					  0, SLAB_HWCACHE_ALIGN, NULL);
+		if (!evdi_painter_ev_cursor_set_cache)
+			goto err;
+
+		evdi_painter_ev_cursor_move_cache =
+			kmem_cache_create("evdi_ev_cursor_move",
+					  sizeof(struct evdi_event_cursor_move_pending),
+					  0, SLAB_HWCACHE_ALIGN, NULL);
+		if (!evdi_painter_ev_cursor_move_cache)
+			goto err;
+
+		evdi_painter_ev_dpms_cache =
+			kmem_cache_create("evdi_ev_dpms",
+					  sizeof(struct evdi_event_dpms_pending),
+					  0, SLAB_HWCACHE_ALIGN, NULL);
+		if (!evdi_painter_ev_dpms_cache)
+			goto err;
+
+		evdi_painter_ev_mode_changed_cache =
+			kmem_cache_create("evdi_ev_mode_changed",
+					  sizeof(struct evdi_event_mode_changed_pending),
+					  0, SLAB_HWCACHE_ALIGN, NULL);
+		if (!evdi_painter_ev_mode_changed_cache)
+			goto err;
+	}
+	atomic_inc(&evdi_painter_event_cache_users);
+	return 0;
+err:
+	if (evdi_painter_ev_mode_changed_cache) {
+		kmem_cache_destroy(evdi_painter_ev_mode_changed_cache);
+		evdi_painter_ev_mode_changed_cache = NULL;
+	}
+	if (evdi_painter_ev_dpms_cache) {
+		kmem_cache_destroy(evdi_painter_ev_dpms_cache);
+		evdi_painter_ev_dpms_cache = NULL;
+	}
+	if (evdi_painter_ev_cursor_move_cache) {
+		kmem_cache_destroy(evdi_painter_ev_cursor_move_cache);
+		evdi_painter_ev_cursor_move_cache = NULL;
+	}
+	if (evdi_painter_ev_cursor_set_cache) {
+		kmem_cache_destroy(evdi_painter_ev_cursor_set_cache);
+		evdi_painter_ev_cursor_set_cache = NULL;
+	}
+	if (evdi_painter_ev_update_ready_cache) {
+		kmem_cache_destroy(evdi_painter_ev_update_ready_cache);
+		evdi_painter_ev_update_ready_cache = NULL;
+	}
+	return -ENOMEM;
+}
+
+static void evdi_painter_event_cache_put(void)
+{
+	if (atomic_dec_and_test(&evdi_painter_event_cache_users)) {
+		if (evdi_painter_ev_mode_changed_cache) {
+			kmem_cache_destroy(evdi_painter_ev_mode_changed_cache);
+			evdi_painter_ev_mode_changed_cache = NULL;
+		}
+		if (evdi_painter_ev_dpms_cache) {
+			kmem_cache_destroy(evdi_painter_ev_dpms_cache);
+			evdi_painter_ev_dpms_cache = NULL;
+		}
+		if (evdi_painter_ev_cursor_move_cache) {
+			kmem_cache_destroy(evdi_painter_ev_cursor_move_cache);
+			evdi_painter_ev_cursor_move_cache = NULL;
+		}
+		if (evdi_painter_ev_cursor_set_cache) {
+			kmem_cache_destroy(evdi_painter_ev_cursor_set_cache);
+			evdi_painter_ev_cursor_set_cache = NULL;
+		}
+		if (evdi_painter_ev_update_ready_cache) {
+			kmem_cache_destroy(evdi_painter_ev_update_ready_cache);
+			evdi_painter_ev_update_ready_cache = NULL;
+		}
+	}
+}
+
+static void evdi_painter_free_pending_event(struct drm_pending_event *base)
+{
+	if (base) {
+		switch (base->event->type) {
+		case DRM_EVDI_EVENT_UPDATE_READY:
+			kmem_cache_free(evdi_painter_ev_update_ready_cache,
+				container_of(base, struct evdi_event_update_ready_pending, base));
+			break;
+		case DRM_EVDI_EVENT_CURSOR_SET:
+			kmem_cache_free(evdi_painter_ev_cursor_set_cache,
+				container_of(base, struct evdi_event_cursor_set_pending, base));
+			break;
+		case DRM_EVDI_EVENT_CURSOR_MOVE:
+			kmem_cache_free(evdi_painter_ev_cursor_move_cache,
+				container_of(base, struct evdi_event_cursor_move_pending, base));
+			break;
+		case DRM_EVDI_EVENT_DPMS:
+			kmem_cache_free(evdi_painter_ev_dpms_cache,
+				container_of(base, struct evdi_event_dpms_pending, base));
+			break;
+		case DRM_EVDI_EVENT_MODE_CHANGED:
+			kmem_cache_free(evdi_painter_ev_mode_changed_cache,
+				container_of(base, struct evdi_event_mode_changed_pending, base));
+			break;
+		default:
+			kfree(base);
+			break;
+		}
+	}
+}
 
 static inline void expand_rect(struct drm_clip_rect *a, const struct drm_clip_rect *b)
 {
@@ -241,7 +370,7 @@ static void evdi_painter_add_event_to_pending_list(
 	    event->event->type == last_event->event->type &&
 	    is_evdi_event_squashable(event)) {
 		list_replace(&last_event->link, &event->link);
-		kfree(last_event);
+		evdi_painter_free_pending_event(last_event);
 	} else
 		list_add_tail(&event->link, list);
 
@@ -318,7 +447,7 @@ static struct drm_pending_event *create_update_ready_event(void)
 {
 	struct evdi_event_update_ready_pending *event;
 
-	event = kzalloc(sizeof(*event), GFP_KERNEL);
+	event = kmem_cache_zalloc(evdi_painter_ev_update_ready_cache, GFP_KERNEL);
 	if (!event) {
 		EVDI_ERROR("Failed to create update ready event");
 		return NULL;
@@ -366,7 +495,7 @@ static struct drm_pending_event *create_cursor_set_event(
 	struct evdi_event_cursor_set_pending *event;
 	struct evdi_gem_object *eobj = NULL;
 
-	event = kzalloc(sizeof(*event), GFP_KERNEL);
+	event = kmem_cache_zalloc(evdi_painter_ev_cursor_set_cache, GFP_KERNEL);
 	if (!event) {
 		EVDI_ERROR("Failed to create cursor set event");
 		return NULL;
@@ -413,7 +542,7 @@ static struct drm_pending_event *create_cursor_move_event(
 {
 	struct evdi_event_cursor_move_pending *event;
 
-	event = kzalloc(sizeof(*event), GFP_KERNEL);
+	event = kmem_cache_zalloc(evdi_painter_ev_cursor_move_cache, GFP_KERNEL);
 	if (!event) {
 		EVDI_ERROR("Failed to create cursor move event");
 		return NULL;
@@ -445,7 +574,7 @@ static struct drm_pending_event *create_dpms_event(int mode)
 {
 	struct evdi_event_dpms_pending *event;
 
-	event = kzalloc(sizeof(*event), GFP_KERNEL);
+	event = kmem_cache_zalloc(evdi_painter_ev_dpms_cache, GFP_KERNEL);
 	if (!event) {
 		EVDI_ERROR("Failed to create dpms event");
 		return NULL;
@@ -473,7 +602,7 @@ static struct drm_pending_event *create_mode_changed_event(
 {
 	struct evdi_event_mode_changed_pending *event;
 
-	event = kzalloc(sizeof(*event), GFP_KERNEL);
+	event = kmem_cache_zalloc(evdi_painter_ev_mode_changed_cache, GFP_KERNEL);
 	if (!event) {
 		EVDI_ERROR("Failed to create mode changed event");
 		return NULL;
@@ -754,7 +883,7 @@ static void evdi_painter_events_cleanup(struct evdi_painter *painter)
 	spin_lock_irqsave(&painter->drm_device->event_lock, flags);
 	list_for_each_entry_safe(event, temp, &painter->pending_events, link) {
 		list_del(&event->link);
-		kfree(event);
+		evdi_painter_free_pending_event(event);
 	}
 	spin_unlock_irqrestore(&painter->drm_device->event_lock, flags);
 
@@ -1077,6 +1206,11 @@ int evdi_painter_init(struct evdi_device *dev)
 	EVDI_CHECKPT();
 	dev->painter = kzalloc(sizeof(*dev->painter), GFP_KERNEL);
 	if (dev->painter) {
+		if (evdi_painter_event_cache_get()) {
+			kfree(dev->painter);
+			dev->painter = NULL;
+			return -ENOMEM;
+		}
 		mutex_init(&dev->painter->lock);
 		dev->painter->width = 0;
 		dev->painter->height = 0;
@@ -1119,6 +1253,7 @@ void evdi_painter_cleanup(struct evdi_painter *painter)
 	painter->drm_device = NULL;
 	painter_unlock(painter);
 	kfree(painter);
+	evdi_painter_event_cache_put();
 }
 
 void evdi_painter_set_scanout_buffer(struct evdi_painter *painter,
