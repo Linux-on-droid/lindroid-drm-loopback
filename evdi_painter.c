@@ -73,7 +73,7 @@ struct evdi_event_crtc_state_pending {
 	struct drm_evdi_event_crtc_state crtc_state;
 };
 
-static void expand_rect(struct drm_clip_rect *a, const struct drm_clip_rect *b)
+static inline void expand_rect(struct drm_clip_rect *a, const struct drm_clip_rect *b)
 {
 	a->x1 = min(a->x1, b->x1);
 	a->y1 = min(a->y1, b->y1);
@@ -81,7 +81,7 @@ static void expand_rect(struct drm_clip_rect *a, const struct drm_clip_rect *b)
 	a->y2 = max(a->y2, b->y2);
 }
 
-static int rect_area(const struct drm_clip_rect *r)
+static inline int rect_area(const struct drm_clip_rect *r)
 {
 	return (r->x2 - r->x1) * (r->y2 - r->y1);
 }
@@ -89,27 +89,33 @@ static int rect_area(const struct drm_clip_rect *r)
 static void merge_dirty_rects(struct drm_clip_rect *rects, int *count)
 {
 	int a, b;
+	int areas[MAX_DIRTS];
+	int n = *count;
+	struct drm_clip_rect bounding;
 
-	for (a = 0; a < *count - 1; ++a) {
-		for (b = a + 1; b < *count;) {
-			/* collapse to bounding rect if it is fewer pixels */
-			const int area_a = rect_area(&rects[a]);
-			const int area_b = rect_area(&rects[b]);
-			struct drm_clip_rect bounding_rect = rects[a];
+	if (unlikely(n <= 1))
+		return;
 
-			expand_rect(&bounding_rect, &rects[b]);
+	for (a = 0; a < n; ++a)
+		areas[a] = rect_area(&rects[a]);
 
-			if (rect_area(&bounding_rect) <= area_a + area_b) {
-				rects[a] = bounding_rect;
-				rects[b] = rects[*count - 1];
-				/* repass */
+	for (a = 0; a < n - 1; ++a) {
+		for (b = a + 1; b < n; ) {
+			bounding = rects[a];
+			expand_rect(&bounding, &rects[b]);
+			if (rect_area(&bounding) <= areas[a] + areas[b]) {
+				rects[a] = bounding;
+				areas[a] = rect_area(&rects[a]);
+				rects[b] = rects[n - 1];
+				areas[b] = areas[n - 1];
+				n--;
 				b = a + 1;
-				--*count;
 			} else {
 				++b;
 			}
 		}
 	}
+	*count = n;
 }
 
 static void collapse_dirty_rects(struct drm_clip_rect *rects, int *count)
@@ -546,7 +552,9 @@ unlock:
 void evdi_painter_mark_dirty(struct evdi_device *evdi,
 			     const struct drm_clip_rect *dirty_rect)
 {
+	int i;
 	struct drm_clip_rect rect;
+	struct drm_clip_rect bounding;
 	struct evdi_framebuffer *efb = NULL;
 	struct evdi_painter *painter = evdi->painter;
 
@@ -569,13 +577,18 @@ void evdi_painter_mark_dirty(struct evdi_device *evdi,
 	EVDI_VERBOSE("(card%d) %d,%d-%d,%d\n", evdi->dev_index, rect.x1,
 		     rect.y1, rect.x2, rect.y2);
 
-	if (painter->num_dirts == MAX_DIRTS)
-		merge_dirty_rects(&painter->dirty_rects[0],
-				  &painter->num_dirts);
+	if (painter->num_dirts >= MAX_DIRTS) {
+		expand_rect(&painter->dirty_rects[0], &rect);
+		goto unlock;
+	}
 
-	if (painter->num_dirts == MAX_DIRTS)
-		collapse_dirty_rects(&painter->dirty_rects[0],
-				     &painter->num_dirts);
+	if (painter->num_dirts == MAX_DIRTS - 1) {
+		bounding = painter->dirty_rects[0];
+		for (i = 1; i < painter->num_dirts; ++i)
+			expand_rect(&bounding, &painter->dirty_rects[i]);
+		painter->dirty_rects[0] = bounding;
+		painter->num_dirts = 1;
+	}
 
 	memcpy(&painter->dirty_rects[painter->num_dirts], &rect, sizeof(rect));
 	painter->num_dirts++;
