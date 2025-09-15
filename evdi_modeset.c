@@ -241,7 +241,7 @@ int evdi_atomic_helper_page_flip(struct drm_crtc *crtc,
 		return -ENOMEM;
 
 	wake_up(&evdi->poll_ioct_wq);
-	ret = wait_event_interruptible(ev_event->wait, ev_event->completed);
+	ret = wait_for_completion_interruptible_timeout(&ev_event->done, EVDI_WAIT_TIMEOUT);
 	if (ret < 0) {
 		EVDI_INFO("evdi_gbm_add_buf_ioctl: wait_event_interruptible interrupted: %d\n", ret);
 		return ret;
