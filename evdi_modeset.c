@@ -254,7 +254,11 @@ int evdi_atomic_helper_page_flip(struct drm_crtc *crtc,
 	}
 
 	spin_lock(&evdi->event_lock);
+#if defined(EVDI_HAVE_XARRAY)
+	xa_erase(&evdi->event_xa, ev_event->poll_id);
+#else
 	idr_remove(&evdi->event_idr, ev_event->poll_id);
+#endif
 	spin_unlock(&evdi->event_lock);
 	evdi_event_free(ev_event);
 

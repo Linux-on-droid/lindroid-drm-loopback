@@ -18,6 +18,12 @@
 #include <linux/mutex.h>
 #include <linux/device.h>
 #include <linux/atomic.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0) || defined(EL8) || defined(EL9)
+#include <linux/xarray.h>
+#define EVDI_HAVE_XARRAY	1
+#else
+#undef EVDI_HAVE_XARRAY
+#endif
 #if KERNEL_VERSION(5, 5, 0) <= LINUX_VERSION_CODE || defined(EL8) || defined(EL9)
 #include <drm/drm_drv.h>
 #include <drm/drm_fourcc.h>
@@ -69,7 +75,11 @@ struct evdi_device {
 	void *last_got_buff;
 	spinlock_t event_lock;
 	struct list_head event_queue;
+#if defined(EVDI_HAVE_XARRAY)
+	struct xarray event_xa;
+#else
 	struct idr event_idr;
+#endif
 	atomic_t next_event_id;
 };
 

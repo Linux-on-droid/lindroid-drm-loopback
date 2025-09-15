@@ -218,7 +218,11 @@ static void evdi_user_framebuffer_destroy(struct drm_framebuffer *fb)
 	}
 
 	spin_lock(&evdi->event_lock);
+#if defined(EVDI_HAVE_XARRAY)
+	xa_erase(&evdi->event_xa, event->poll_id);
+#else
 	idr_remove(&evdi->event_idr, event->poll_id);
+#endif
 	spin_unlock(&evdi->event_lock);
 	evdi_event_free(event);
 
