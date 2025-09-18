@@ -186,7 +186,6 @@ static void evdi_user_framebuffer_destroy(struct drm_framebuffer *fb)
 	struct drm_device *dev = efb->base.dev;
 	struct evdi_device *evdi = dev->dev_private;
 	struct evdi_event *event;
-	int ret;
 	
 	EVDI_CHECKPT();
 	if (efb->obj)
@@ -197,34 +196,25 @@ static void evdi_user_framebuffer_destroy(struct drm_framebuffer *fb)
 #endif
 	drm_framebuffer_cleanup(fb);
 
+	if (!evdi_painter_is_connected(evdi->painter)) {
+		kfree(efb);
+		return;
+	}
+
 	event = evdi_create_event(evdi, destroy_buf, &efb->gralloc_buf_id, efb->owner);
 	if (!event)
 		return;
 
 	wake_up_interruptible(&evdi->poll_ioct_wq);
-	ret = wait_for_completion_interruptible_timeout(&event->done, EVDI_WAIT_TIMEOUT);
-	if (ret < 0) {
-		EVDI_ERROR("evdi_gbm_add_buf_ioctl: wait_event_interruptible interrupted: %d\n", ret);
-		return;
-	}
-
-	ret = event->result;
-	if (ret < 0) {
-		EVDI_ERROR("evdi_gbm_add_buf_ioctl: user ioctl failled\n");
-		return;
-	}
-
-	evdi_event_unlink_and_free(evdi, event);
-
 	kfree(efb);
 }
 
-	int evdi_atomic_helper_dirtyfb(struct drm_framebuffer *framebuffer,
+int evdi_atomic_helper_dirtyfb(struct drm_framebuffer *framebuffer,
 		     struct drm_file *file_priv, unsigned flags,
 		     unsigned color, struct drm_clip_rect *clips,
 		     unsigned num_clips){
-				 return 0;
-			}
+	return 0;
+}
 
 static const struct drm_framebuffer_funcs evdifb_funcs = {
 	.create_handle = evdi_user_framebuffer_create_handle,

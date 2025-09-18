@@ -367,15 +367,14 @@ int evdi_swap_callback_ioctl(struct drm_device *drm_dev, void *data,
 {
 	struct evdi_device *evdi = drm_dev->dev_private;
 	struct drm_evdi_add_buff_callabck *cmd = data;
-	struct evdi_event *event;
-
-	event = evdi_find_event(evdi, cmd->poll_id);
+	struct evdi_event *event = evdi_find_event(evdi, cmd->poll_id);
 
 	if (!event)
 		return -EINVAL;
 
 	event->result = 0;
 	complete(&event->done);
+	evdi_event_unlink_and_free(evdi, event);
 	return 0;
 }
 
@@ -475,9 +474,7 @@ int evdi_destroy_buff_callback_ioctl(struct drm_device *drm_dev, void *data,
 {
 	struct evdi_device *evdi = drm_dev->dev_private;
 	struct drm_evdi_add_buff_callabck *cmd = data;
-	struct evdi_event *event;
-
-	event = evdi_find_event(evdi, cmd->poll_id);
+	struct evdi_event *event = evdi_find_event(evdi, cmd->poll_id);
 
 	if (!event) {
 		EVDI_ERROR("evdi_destroy_buff_callback_ioctl: event is null\n");
@@ -486,6 +483,7 @@ int evdi_destroy_buff_callback_ioctl(struct drm_device *drm_dev, void *data,
 
 	event->result = 0;
 	complete(&event->done);
+	evdi_event_unlink_and_free(evdi, event);
 	return 0;
 }
 

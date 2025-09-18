@@ -228,7 +228,6 @@ int evdi_atomic_helper_page_flip(struct drm_crtc *crtc,
 	struct evdi_device *evdi;
 	struct evdi_framebuffer *efb;
 	struct evdi_event *ev_event;
-	int ret;
 	dev = crtc->dev;
 	evdi = dev->dev_private;
 	efb = evdi->painter->scanout_fb;
@@ -237,22 +236,7 @@ int evdi_atomic_helper_page_flip(struct drm_crtc *crtc,
 	if (!ev_event)
 		return -ENOMEM;
 
-	wake_up(&evdi->poll_ioct_wq);
-	ret = wait_for_completion_interruptible_timeout(&ev_event->done, EVDI_WAIT_TIMEOUT);
-	if (ret < 0) {
-		EVDI_INFO("evdi_gbm_add_buf_ioctl: wait_event_interruptible interrupted: %d\n", ret);
-		return ret;
-	}
-
-	ret = ev_event->result;
-	if (ret < 0) {
-		EVDI_ERROR("evdi_gbm_add_buf_ioctl: user ioctl failled\n");
-		return ret;
-	}
-
-	evdi_event_unlink_and_free(evdi, ev_event);
-
-	evdi_painter_send_vblank(evdi->painter);
+	wake_up_interruptible(&evdi->poll_ioct_wq);
 
 	return drm_atomic_helper_page_flip(crtc, fb, event, flags, ctx);
 }
