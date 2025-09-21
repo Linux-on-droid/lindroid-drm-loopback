@@ -93,9 +93,11 @@ struct evdi_event {
 	int poll_id;
 	bool on_queue;
 	struct drm_file *owner;
-
 	struct list_head list;
 	struct evdi_device *evdi;
+#if defined(EVDI_HAVE_XARRAY)
+	struct rcu_head	rcu;
+#endif
 };
 
 struct evdi_gem_object {

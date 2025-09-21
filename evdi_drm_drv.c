@@ -367,7 +367,11 @@ void evdi_event_unlink_and_free(struct evdi_device *evdi,
 		event->on_queue = false;
 	}
 	spin_unlock(&evdi->event_lock);
+#if defined(EVDI_HAVE_XARRAY)
+	kfree_rcu(event, rcu);
+#else
 	evdi_event_free(event);
+#endif
 }
 
 static inline struct evdi_event *evdi_find_event(struct evdi_device *evdi, u32 poll_id)
@@ -1131,9 +1135,12 @@ static void evdi_cancel_events_for_file(struct evdi_device *evdi,
 			if (refcount_dec_and_test(&kreq->refs))
 				kmem_cache_free(evdi_kreq_cache, kreq);
 		}
+#if defined(EVDI_HAVE_XARRAY)
+		kfree_rcu(event, rcu);
+#else
 		evdi_event_free(event);
+#endif
 	}
-
 	spin_unlock(&evdi->event_lock);
 }
 
