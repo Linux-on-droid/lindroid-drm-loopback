@@ -154,15 +154,26 @@ static inline int evdi_prefault_readable(const void __user *uaddr, size_t len)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,15,0)
 	return fault_in_readable(uaddr, len);
 #else
-	return 0;
-#endif
-}
+	unsigned long start = 0;
+	unsigned long end = 0;
+	unsigned long addr = 0;
+	unsigned char tmp;
 
-static inline int evdi_prefault_writeable(void __user *uaddr, size_t len)
-{
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,15,0)
-	return fault_in_writeable(uaddr, len);
-#else
+	if (unlikely(__get_user(tmp, (const unsigned char __user *)start)))
+		return -EFAULT;
+
+	addr = (start | (PAGE_SIZE - 1)) + 1;
+	while (addr <= (end & PAGE_MASK)) {
+		if (unlikely(__get_user(tmp, (const unsigned char __user *)addr)))
+			return -EFAULT;
+
+	addr += PAGE_SIZE;
+	}
+
+	if ((start & PAGE_MASK) != (end & PAGE_MASK)) {
+		if (unlikely(__get_user(tmp, (const unsigned char __user *)end)))
+			return -EFAULT;
+	}
 	return 0;
 #endif
 }
@@ -192,7 +203,6 @@ static int evdi_copy_to_user_allow_partial(void __user *dst, const void *src, si
 		return 0;
 
 	prefetch(src);
-	(void)evdi_prefault_writeable(dst, len);
 	not = copy_to_user(dst, src, len);
 	if (not == len)
 		return -EFAULT;
