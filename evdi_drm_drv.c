@@ -24,6 +24,7 @@
 #include <linux/rcupdate.h>
 #include <linux/prefetch.h>
 #include <linux/refcount.h>
+#include <linux/pagemap.h>
 #if KERNEL_VERSION(5, 16, 0) <= LINUX_VERSION_CODE || defined(EL8) || defined(EL9)
 #include <drm/drm_ioctl.h>
 #include <drm/drm_file.h>
@@ -151,19 +152,19 @@ static struct kmem_cache *evdi_gralloc_cache;
 //Handle short copies due to minor faults on big buffers
 static inline int evdi_prefault_readable(const void __user *uaddr, size_t len)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,9,0) || defined(EL8) || defined(EL9)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,15,0) || defined(EL8) || defined(EL9)
 	return fault_in_readable(uaddr, len);
 #else
-	return 0;
+	return fault_in_pages_readable(uaddr, len);;
 #endif
 }
 
 static inline int evdi_prefault_writeable(void __user *uaddr, size_t len)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,9,0) || defined(EL8) || defined(EL9)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,15,0) || defined(EL8) || defined(EL9)
 	return fault_in_writeable(uaddr, len);
 #else
-	return 0;
+	return fault_in_pages_writeable(uaddr, len);;
 #endif
 }
 
