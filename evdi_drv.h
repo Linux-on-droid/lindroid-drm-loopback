@@ -1,0 +1,242 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+
+#ifndef __EVDI_DRV_H__
+#define __EVDI_DRV_H__
+
+#include <linux/module.h>
+#include <linux/version.h>
+#include <linux/mutex.h>
+#include <linux/device.h>
+#include <linux/platform_device.h>
+#include <linux/atomic.h>
+#include <linux/completion.h>
+#include <linux/slab.h>
+#include <linux/wait.h>
+#include <linux/poll.h>
+#include <linux/workqueue.h>
+
+#if KERNEL_VERSION(5, 5, 0) <= LINUX_VERSION_CODE
+#include <drm/drm_drv.h>
+#include <drm/drm_fourcc.h>
+#include <drm/drm_ioctl.h>
+#include <drm/drm_file.h>
+#include <drm/drm_vblank.h>
+#elif KERNEL_VERSION(4, 11, 0) <= LINUX_VERSION_CODE
+#include <drm/drm_drv.h>
+#include <drm/drmP.h>
+#else
+#include <drm/drmP.h>
+#endif
+
+#include <drm/drm_crtc.h>
+#include <drm/drm_crtc_helper.h>
+#include <drm/drm_encoder.h>
+#include <drm/drm_connector.h>
+
+#if KERNEL_VERSION(4, 19, 0) <= LINUX_VERSION_CODE
+#include <drm/drm_atomic.h>
+#include <drm/drm_atomic_helper.h>
+#include <drm/drm_probe_helper.h>
+#endif
+
+#if KERNEL_VERSION(5, 0, 0) <= LINUX_VERSION_CODE
+#include <linux/xarray.h>
+#define EVDI_HAVE_XARRAY 1
+#else
+#include <linux/idr.h>
+#undef EVDI_HAVE_XARRAY
+#endif
+
+#if KERNEL_VERSION(5, 11, 0) <= LINUX_VERSION_CODE
+#include <drm/drm_managed.h>
+#define EVDI_HAVE_DRM_MANAGED 1
+#else
+#undef EVDI_HAVE_DRM_MANAGED
+#endif
+
+#include "uapi/evdi_drm.h"
+
+#define DRIVER_NAME "evdi-lindroid"
+#define DRIVER_DESC "Lindroid Virtual Display Interface"
+#define DRIVER_MAJOR 1
+#define DRIVER_MINOR 0
+#define DRIVER_PATCHLEVEL 0
+
+struct evdi_device;
+
+struct evdi_event_pool {
+	struct kmem_cache *cache;
+	atomic_t allocated;
+	atomic_t peak_usage;
+};
+
+struct evdi_event {
+	enum poll_event_type type;
+	int poll_id;
+	void *data;
+	size_t data_size;
+	struct evdi_event *next;
+	bool from_pool;
+	struct drm_file *owner;
+	struct evdi_device *evdi;
+};
+
+struct evdi_device {
+	struct drm_device *ddev;
+	struct drm_connector *connector;
+	struct drm_encoder *encoder;
+	struct drm_crtc *crtc;
+
+	int dev_index;
+
+	bool connected;
+	uint32_t width;
+	uint32_t height;
+	uint32_t refresh_rate;
+
+	struct {
+	struct evdi_event * volatile head;
+	struct evdi_event * volatile tail;
+	wait_queue_head_t wait_queue;
+	struct evdi_event_pool pool;
+	atomic_t queue_size;
+	atomic_t next_poll_id;
+	atomic_t stopping;
+	atomic64_t events_queued;
+	atomic64_t events_dequeued;
+	atomic64_t pool_hits;
+	atomic64_t pool_misses;
+	} events;
+
+	struct mutex config_mutex;
+
+	struct platform_device *pdev;
+
+#ifdef EVDI_HAVE_XARRAY
+	struct xarray file_xa;
+#else
+	struct idr file_idr;
+	spinlock_t file_lock;
+#endif
+};
+
+extern struct evdi_event_pool *evdi_global_event_pool;
+extern atomic_t evdi_device_count;
+
+/* evdi_lindroid_drv.c */
+int evdi_device_init(struct evdi_device *evdi, struct platform_device *pdev);
+void evdi_device_cleanup(struct evdi_device *evdi);
+
+/* evdi_modeset.c */
+int evdi_modeset_init(struct drm_device *dev);
+void evdi_modeset_cleanup(struct drm_device *dev);
+int evdi_crtc_init(struct drm_device *dev, struct evdi_device *evdi);
+
+/* evdi_connector.c */
+int evdi_connector_init(struct drm_device *dev, struct evdi_device *evdi);
+void evdi_connector_cleanup(struct evdi_device *evdi);
+
+/* evdi_encoder.c */
+int evdi_encoder_init(struct drm_device *dev, struct evdi_device *evdi);
+void evdi_encoder_cleanup(struct evdi_device *evdi);
+
+/* evdi_ioctl.c */
+int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file);
+int evdi_ioctl_poll(struct drm_device *dev, void *data, struct drm_file *file);
+int evdi_ioctl_add_buff_callback(struct drm_device *dev, void *data, struct drm_file *file);
+int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_file *file);
+int evdi_ioctl_destroy_buff_callback(struct drm_device *dev, void *data, struct drm_file *file);
+int evdi_ioctl_swap_callback(struct drm_device *dev, void *data, struct drm_file *file);
+int evdi_ioctl_create_buff_callback(struct drm_device *dev, void *data, struct drm_file *file);
+
+/* evdi_event.c */
+int evdi_event_init(struct evdi_device *evdi);
+void evdi_event_cleanup(struct evdi_device *evdi);
+struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
+				   enum poll_event_type type,
+				   int poll_id,
+				   void *data,
+				   size_t data_size,
+				   struct drm_file *owner);
+void evdi_event_free(struct evdi_event *event);
+void evdi_event_queue(struct evdi_device *evdi, struct evdi_event *event);
+struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi);
+void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file);
+int evdi_event_wait(struct evdi_device *evdi, struct drm_file *file);
+
+/* evdi_sysfs.c */
+int evdi_sysfs_init(void);
+void evdi_sysfs_cleanup(void);
+
+/* Helpers */
+static __always_inline bool evdi_likely_connected(struct evdi_device *evdi)
+{
+	return likely(evdi->connected);
+}
+
+static __always_inline bool evdi_likely_not_stopping(struct evdi_device *evdi)
+{
+	return likely(!atomic_read(&evdi->events.stopping));
+}
+
+/* Memory barriers */
+static __always_inline void evdi_smp_wmb(void)
+{
+	smp_wmb();
+}
+
+static __always_inline void evdi_smp_rmb(void)
+{
+	smp_rmb();
+}
+
+/* Macros */
+#if KERNEL_VERSION(4, 11, 0) <= LINUX_VERSION_CODE
+#define EVDI_HAVE_DRM_OPEN_CLOSE 1
+#else
+#define EVDI_HAVE_DRM_OPEN_CLOSE 0
+#endif
+
+#if KERNEL_VERSION(4, 19, 0) <= LINUX_VERSION_CODE
+#define EVDI_HAVE_ATOMIC_HELPERS 1
+#else
+#define EVDI_HAVE_ATOMIC_HELPERS 0
+#endif
+
+#if KERNEL_VERSION(5, 15, 0) <= LINUX_VERSION_CODE
+#define EVDI_HAVE_CONNECTOR_INIT_WITH_DDC 1
+#else
+#define EVDI_HAVE_CONNECTOR_INIT_WITH_DDC 0
+#endif
+
+/* Debug and statistics */
+#ifdef DEBUG
+#define evdi_debug(fmt, ...) \
+	pr_debug("[evdi-lindroid] " fmt "\n", ##__VA_ARGS__)
+#else
+#define evdi_debug(fmt, ...) do { } while (0)
+#endif
+
+#define evdi_info(fmt, ...) \
+	pr_info("[evdi-lindroid] " fmt "\n", ##__VA_ARGS__)
+
+#define evdi_warn(fmt, ...) \
+	pr_warn("[evdi-lindroid] " fmt "\n", ##__VA_ARGS__)
+
+#define evdi_err(fmt, ...) \
+	pr_err("[evdi-lindroid] " fmt "\n", ##__VA_ARGS__)
+
+/* Performance counters for monitoring */
+struct evdi_perf_counters {
+	atomic64_t ioctl_calls[16];
+	atomic64_t event_queue_ops;
+	atomic64_t event_dequeue_ops;
+	atomic64_t pool_alloc_fast;
+	atomic64_t pool_alloc_slow;
+	atomic64_t wakeup_count;
+	atomic64_t poll_cycles;
+};
+
+extern struct evdi_perf_counters evdi_perf;
+
+#endif /* __EVDI_DRV_H__ */
