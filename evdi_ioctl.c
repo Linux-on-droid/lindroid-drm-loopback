@@ -5,6 +5,8 @@
 
 #include "evdi_drv.h"
 #include <linux/uaccess.h>
+#include <linux/file.h>
+#include <linux/fdtable.h>
 #include <linux/prefetch.h>
 #include <linux/completion.h>
 #include <linux/compat.h>
@@ -131,6 +133,32 @@ static int evdi_queue_create_event_with_id(struct evdi_device *evdi,
 	return 0;
 }
 
+static int evdi_queue_get_buf_event_with_id(struct evdi_device *evdi,
+					   struct drm_evdi_gbm_get_buff *params,
+					   struct drm_file *owner,
+					   int poll_id)
+{
+	struct evdi_event *event;
+	void *data;
+
+	data = kmalloc(sizeof(*params), GFP_ATOMIC);
+	if (!data)
+		return -ENOMEM;
+
+	memcpy(data, params, sizeof(*params));
+
+	event = evdi_event_alloc(evdi, get_buf,
+				 poll_id,
+				 data, sizeof(*params), owner);
+	if (!event) {
+		kfree(data);
+		return -ENOMEM;
+	}
+
+	evdi_event_queue(evdi, event);
+	return 0;
+}
+
 int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file)
 {
 	struct evdi_device *evdi = dev->dev_private;
@@ -238,6 +266,91 @@ static int evdi_copy_to_user_allow_partial(void __user *dst, const void *src, si
 	return 0;
 }
 
+int evdi_ioctl_gbm_get_buff(struct drm_device *dev, void *data, struct drm_file *file)
+{
+	struct evdi_device *evdi = dev->dev_private;
+	struct drm_evdi_gbm_get_buff *cmd = data;
+	struct evdi_inflight_req *req;
+	struct drm_evdi_gbm_get_buff evt_params;
+	struct evdi_gralloc_buf_user *gralloc_buf;
+	int poll_id;
+	long ret;
+	int fd_tmp;
+	int i;
+	int installed_fds[EVDI_MAX_FDS];
+
+//     atomic64_inc(&evdi_perf.ioctl_calls[6]);
+
+	req = evdi_inflight_alloc(evdi, file, get_buf, &poll_id);
+	if (!req)
+		return -ENOMEM;
+
+	memset(&evt_params, 0, sizeof(evt_params));
+	evt_params.id = cmd->id;
+	evt_params.native_handle = NULL;
+
+	if (evdi_queue_get_buf_event_with_id(evdi, &evt_params, file, poll_id)) {
+		struct evdi_inflight_req *tmp = evdi_inflight_take(evdi, poll_id);
+		if (tmp)
+			kfree(tmp);
+		return -ENOMEM;
+	}
+
+	ret = wait_for_completion_interruptible_timeout(&req->done, EVDI_WAIT_TIMEOUT);
+	if (ret == 0) {
+			kfree(req);
+			return -ETIMEDOUT;
+	}
+	if (ret < 0) {
+			kfree(req);
+			return (int)ret;
+	}
+
+	gralloc_buf = kzalloc(sizeof(struct evdi_gralloc_buf_user), GFP_KERNEL);
+
+	gralloc_buf->version = req->reply.get_buf.gralloc_buf.version;
+	gralloc_buf->numFds = req->reply.get_buf.gralloc_buf.numFds;
+	gralloc_buf->numInts = req->reply.get_buf.gralloc_buf.numInts;
+	memcpy(&gralloc_buf->data[gralloc_buf->numFds],
+			req->reply.get_buf.gralloc_buf.data_ints,
+			sizeof(int) * gralloc_buf->numInts);
+
+	for (i = 0; i < gralloc_buf->numFds; i++) {
+			fd_tmp = get_unused_fd_flags(O_RDWR);
+			if (fd_tmp < 0) {
+					while (--i >= 0)
+							put_unused_fd(installed_fds[i]);
+					ret = fd_tmp;
+					goto err_event;
+			}
+			installed_fds[i] = fd_tmp;
+			gralloc_buf->data[i] = fd_tmp;
+	}
+
+	if (evdi_copy_to_user_allow_partial(cmd->native_handle,
+										gralloc_buf,
+										sizeof(int) * (3 + gralloc_buf->numFds + gralloc_buf->numInts))) {
+		for (i = 0; i < gralloc_buf->numFds; i++)
+			put_unused_fd(installed_fds[i]);
+		ret = -EFAULT;
+		goto err_event;
+	}
+
+	for (i = 0; i < gralloc_buf->numFds; i++)
+		fd_install(installed_fds[i], req->reply.get_buf.gralloc_buf.data_files[i]);
+
+err_event:
+	for (i = 0; i < gralloc_buf->numFds; i++) {
+		if (req->reply.get_buf.gralloc_buf.data_files[i]) {
+			fput(req->reply.get_buf.gralloc_buf.data_files[i]);
+			req->reply.get_buf.gralloc_buf.data_files[i] = NULL;
+		}
+	}
+	kfree(gralloc_buf);
+	kfree(req);
+	return ret;
+}
+
 int evdi_ioctl_gbm_create_buff(struct drm_device *dev, void *data, struct drm_file *file)
 {
 	struct evdi_device *evdi = dev->dev_private;
@@ -318,8 +431,39 @@ int evdi_ioctl_add_buff_callback(struct drm_device *dev, void *data, struct drm_
 int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_file *file)
 {
 	struct evdi_device *evdi = dev->dev_private;
+	struct drm_evdi_get_buff_callabck *cb = data;
+	struct evdi_inflight_req *req;
+	int i;
 
 	atomic64_inc(&evdi_perf.ioctl_calls[3]);
+
+	req = evdi_inflight_take(evdi, cb->poll_id);
+	if (req) {
+		req->reply.get_buf.status = 0;
+		if (cb->numFds < 0 || cb->numInts < 0 ||
+			cb->numFds > EVDI_MAX_FDS || cb->numInts > EVDI_MAX_INTS) {
+			req->reply.get_buf.status = -EINVAL;
+			return -EINVAL;
+		}
+
+		req->reply.get_buf.gralloc_buf.version = cb->version;
+		req->reply.get_buf.gralloc_buf.numFds = cb->numFds;
+		req->reply.get_buf.gralloc_buf.numInts = cb->numInts;
+
+		for (i = 0; i < cb->numInts; i++)
+			req->reply.get_buf.gralloc_buf.data_ints[i] = cb->data_ints[i];
+
+		for (i = 0; i < cb->numFds; i++) {
+			req->reply.get_buf.gralloc_buf.data_files[i] = fget(cb->fd_ints[i]);
+			if (!req->reply.get_buf.gralloc_buf.data_files[i]) {
+				evdi_err("evdi_ioctl_get_buff_callback: Failed to open fb %d\n", cb->fd_ints[i]);
+				req->reply.get_buf.status = -EINVAL;
+				return -EINVAL;
+			}
+		}
+
+		complete_all(&req->done);
+	}
 
 	wake_up_interruptible(&evdi->events.wait_queue);
 
@@ -374,6 +518,8 @@ const struct drm_ioctl_desc evdi_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(EVDI_GBM_CREATE_BUFF, evdi_ioctl_gbm_create_buff,
 			 DRM_UNLOCKED),
 	DRM_IOCTL_DEF_DRV(EVDI_ADD_BUFF_CALLBACK, evdi_ioctl_add_buff_callback,
+			 DRM_UNLOCKED),
+	DRM_IOCTL_DEF_DRV(EVDI_GBM_GET_BUFF, evdi_ioctl_gbm_get_buff,
 			 DRM_UNLOCKED),
 	DRM_IOCTL_DEF_DRV(EVDI_GET_BUFF_CALLBACK, evdi_ioctl_get_buff_callback,
 			 DRM_UNLOCKED),

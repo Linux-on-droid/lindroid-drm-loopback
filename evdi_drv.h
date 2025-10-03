@@ -72,7 +72,25 @@
 
 #define EVDI_WAIT_TIMEOUT	msecs_to_jiffies(5000)
 
+#define EVDI_MAX_FDS   32
+#define EVDI_MAX_INTS  256
+
 struct evdi_device;
+
+struct evdi_gralloc_buf {
+	int version;
+	int numFds;
+	int numInts;
+	struct file *data_files[EVDI_MAX_FDS];
+	int data_ints[EVDI_MAX_INTS];
+};
+
+struct evdi_gralloc_buf_user {
+	int version;
+	int numFds;
+	int numInts;
+	int data[EVDI_MAX_FDS + EVDI_MAX_INTS];
+};
 
 struct evdi_event_pool {
 	struct kmem_cache *cache;
@@ -100,6 +118,10 @@ struct evdi_inflight_req {
 			int id;
 			u32 stride;
 		} create;
+		struct {
+			struct evdi_gralloc_buf gralloc_buf;
+			int status;
+		} get_buf;
 	} reply;
 };
 
