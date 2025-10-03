@@ -58,6 +58,7 @@
 
 #define DRIVER_NAME "evdi-lindroid"
 #define DRIVER_DESC "Lindroid Virtual Display Interface"
+#define DRIVER_DATE   "NEVER"
 #define DRIVER_MAJOR 1
 #define DRIVER_MINOR 0
 #define DRIVER_PATCHLEVEL 0
