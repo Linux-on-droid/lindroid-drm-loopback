@@ -5,6 +5,7 @@
 
 #include "evdi_drv.h"
 #include <drm/drm_gem_framebuffer_helper.h>
+#include <drm/drm_atomic_helper.h>
 
 static const struct drm_mode_config_funcs evdi_mode_config_funcs = {
 #if EVDI_HAVE_ATOMIC_HELPERS
@@ -31,9 +32,21 @@ static void evdi_pipe_disable(struct drm_simple_display_pipe *pipe)
 {
 }
 
+static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
+			     struct drm_plane_state *old_state)
+{
+	struct drm_plane_state *state = pipe->plane.state;
+	struct evdi_device *evdi = pipe->plane.dev->dev_private;
+
+	if (state->fb && (!old_state->fb || old_state->fb != state->fb)) {
+		evdi_queue_swap_event(evdi, 0, NULL);
+	}
+}
+
 static const struct drm_simple_display_pipe_funcs evdi_pipe_funcs = {
 	.enable		= evdi_pipe_enable,
 	.disable	= evdi_pipe_disable,
+	.update		= evdi_pipe_update,
 };
 
 int evdi_modeset_init(struct drm_device *dev)

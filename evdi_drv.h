@@ -22,6 +22,7 @@
 #include <drm/drm_fourcc.h>
 #include <drm/drm_ioctl.h>
 #include <drm/drm_file.h>
+#include <drm/drm_gem.h>
 #include <drm/drm_vblank.h>
 #elif KERNEL_VERSION(4, 11, 0) <= LINUX_VERSION_CODE
 #include <drm/drm_drv.h>
@@ -125,6 +126,21 @@ struct evdi_inflight_req {
 	} reply;
 };
 
+struct evdi_gem_object {
+	struct drm_gem_object base;
+	struct page **pages;
+	atomic_t pages_pin_count;
+	struct mutex pages_lock;
+	void *vmapping;
+#if KERNEL_VERSION(5, 11, 0) <= LINUX_VERSION_CODE
+	bool vmap_is_iomem;
+#endif
+	bool vmap_is_vmram;
+	struct sg_table *sg;
+};
+
+#define to_evdi_bo(x) container_of(x, struct evdi_gem_object, base)
+
 struct evdi_device {
 	struct drm_device *ddev;
 	struct drm_connector *connector;
@@ -199,6 +215,7 @@ int evdi_ioctl_swap_callback(struct drm_device *dev, void *data, struct drm_file
 int evdi_ioctl_create_buff_callback(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_ioctl_gbm_create_buff(struct drm_device *dev, void *data, struct drm_file *file);
 void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owner);
+int evdi_queue_swap_event(struct evdi_device *evdi, int id, struct drm_file *owner);
 
 /* evdi_event.c */
 int evdi_event_init(struct evdi_device *evdi);
@@ -214,6 +231,25 @@ void evdi_event_queue(struct evdi_device *evdi, struct evdi_event *event);
 struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi);
 void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file);
 int evdi_event_wait(struct evdi_device *evdi, struct drm_file *file);
+
+/* evdi_gem.c */
+struct evdi_gem_object *evdi_gem_alloc_object(struct drm_device *dev, size_t size);
+int evdi_gem_create(struct drm_file *file, struct drm_device *dev, uint64_t size, uint32_t *handle_p);
+int evdi_dumb_create(struct drm_file *file, struct drm_device *dev, struct drm_mode_create_dumb *args);
+int evdi_drm_gem_mmap(struct file *filp, struct vm_area_struct *vma);
+void evdi_gem_free_object(struct drm_gem_object *gem_obj);
+uint32_t evdi_gem_object_handle_lookup(struct drm_file *filp, struct drm_gem_object *obj);
+struct sg_table *evdi_prime_get_sg_table(struct drm_gem_object *obj);
+struct drm_gem_object *evdi_prime_import_sg_table(struct drm_device *dev,
+						  struct dma_buf_attachment *attach,
+						  struct sg_table *sg);
+int evdi_gem_vmap(struct evdi_gem_object *obj);
+void evdi_gem_vunmap(struct evdi_gem_object *obj);
+#if KERNEL_VERSION(4, 17, 0) <= LINUX_VERSION_CODE
+vm_fault_t evdi_gem_fault(struct vm_fault *vmf);
+#else
+int evdi_gem_fault(struct vm_fault *vmf);
+#endif
 
 /* evdi_sysfs.c */
 int evdi_sysfs_init(void);
@@ -289,5 +325,8 @@ struct evdi_perf_counters {
 };
 
 extern struct evdi_perf_counters evdi_perf;
+
+/* External vm_ops */
+extern const struct vm_operations_struct evdi_gem_vm_ops;
 
 #endif /* __EVDI_DRV_H__ */

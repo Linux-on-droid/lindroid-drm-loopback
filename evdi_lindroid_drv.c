@@ -26,6 +26,7 @@ static const struct file_operations evdi_fops = {
 	.open = drm_open,
 	.release = drm_release,
 	.unlocked_ioctl = drm_ioctl,
+	.mmap = evdi_drm_gem_mmap,
 	.llseek = noop_llseek,
 	.poll = evdi_event_poll,
 	.read = evdi_event_read,
@@ -41,6 +42,14 @@ static struct drm_driver evdi_driver = {
 			  DRIVER_ATOMIC |
 #endif
 			  DRIVER_GEM,
+
+	.dumb_create = evdi_dumb_create,
+#if KERNEL_VERSION(5, 9, 0) <= LINUX_VERSION_CODE
+	.gem_create_object = NULL,
+#endif
+	.prime_handle_to_fd = drm_gem_prime_handle_to_fd,
+	.prime_fd_to_handle = drm_gem_prime_fd_to_handle,
+	.gem_prime_import_sg_table = evdi_prime_import_sg_table,
 
 	.open = evdi_driver_open,
 	.postclose = evdi_driver_postclose,
@@ -58,6 +67,14 @@ static struct drm_driver evdi_driver = {
 	.major = DRIVER_MAJOR,
 	.minor = DRIVER_MINOR,
 	.patchlevel = DRIVER_PATCHLEVEL,
+#ifdef DRIVER_PRIME
+	.driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_PRIME
+#else
+	.driver_features = DRIVER_MODESET | DRIVER_GEM
+#endif
+#if EVDI_HAVE_ATOMIC_HELPERS
+		| DRIVER_ATOMIC
+#endif
 };
 
 static int evdi_driver_open(struct drm_device *dev, struct drm_file *file)
