@@ -5,6 +5,16 @@
 
 #include "evdi_drv.h"
 
+static const struct drm_mode_config_funcs evdi_mode_config_funcs = {
+#if EVDI_HAVE_ATOMIC_HELPERS
+    .fb_create     = NULL,
+    .atomic_check  = drm_atomic_helper_check,
+    .atomic_commit = drm_atomic_helper_commit,
+#else
+    .fb_create     = NULL,
+#endif
+};
+
 int evdi_modeset_init(struct drm_device *dev)
 {
 	struct evdi_device *evdi = dev->dev_private;
@@ -28,17 +38,7 @@ int evdi_modeset_init(struct drm_device *dev)
 	dev->mode_config.preferred_depth = 24;
 	dev->mode_config.prefer_shadow = 1;
 
-#if EVDI_HAVE_ATOMIC_HELPERS
-	dev->mode_config.funcs = &(const struct drm_mode_config_funcs) {
-		.fb_create = NULL,
-		.atomic_check = drm_atomic_helper_check,
-		.atomic_commit = drm_atomic_helper_commit,
-	};
-#else
-	dev->mode_config.funcs = &(const struct drm_mode_config_funcs) {
-		.fb_create = NULL,  /* Not needed for create-disp */
-	};
-#endif
+	dev->mode_config.funcs = &evdi_mode_config_funcs;
 
 	ret = evdi_connector_init(dev, evdi);
 	if (ret) {
