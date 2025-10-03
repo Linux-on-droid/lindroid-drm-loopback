@@ -39,6 +39,9 @@
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_probe_helper.h>
+#define EVDI_HAVE_KMS_HELPER 1
+#else
+#undef EVDI_HAVE_KMS_HELPER
 #endif
 
 #include <drm/drm_simple_kms_helper.h>

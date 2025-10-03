@@ -71,8 +71,6 @@ int evdi_modeset_init(struct drm_device *dev)
 		goto err_pipe;
 	}
 
-	drm_connector_attach_encoder(evdi->connector, evdi->encoder);
-
 	evdi_info("Modeset initialized for device %d", evdi->dev_index);
 	return 0;
 

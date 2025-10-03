@@ -145,6 +145,11 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 		wake_up_interruptible(&evdi->events.wait_queue);
 
 		evdi_info("Device %d disconnected", evdi->dev_index);
+#ifdef EVDI_HAVE_KMS_HELPER
+		drm_kms_helper_hotplug_event(dev);
+#else
+		drm_helper_hpd_irq_event(dev);
+#endif
 		return 0;
 	}
 
@@ -162,6 +167,11 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 	evdi_info("Device %d connected: %ux%u@%uHz",
 		 evdi->dev_index, cmd->width, cmd->height, cmd->refresh_rate);
 
+#ifdef EVDI_HAVE_KMS_HELPER
+		drm_kms_helper_hotplug_event(dev);
+#else
+		drm_helper_hpd_irq_event(dev);
+#endif
 	return 0;
 }
 
