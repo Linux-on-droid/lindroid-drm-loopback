@@ -8,7 +8,6 @@
 #include <linux/sysfs.h>
 #include <linux/platform_device.h>
 
-static struct class *evdi_class;
 static struct device *evdi_sysfs_dev;
 
 static ssize_t add_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -20,6 +19,7 @@ static ssize_t add_store(struct device *dev, struct device_attribute *attr,
 			const char *buf, size_t count)
 {
 	struct platform_device *pdev;
+	struct device *parent = evdi_sysfs_dev;
 	int val, ret;
 
 	ret = kstrtoint(buf, 10, &val);
@@ -39,6 +39,7 @@ static ssize_t add_store(struct device *dev, struct device_attribute *attr,
 		return -ENOMEM;
 	}
 
+	pdev->dev.parent = parent;
 	ret = platform_device_add(pdev);
 	if (ret) {
 		evdi_err("Failed to add platform device: %d", ret);
@@ -121,33 +122,26 @@ int evdi_sysfs_init(void)
 {
 	int ret;
 
-	evdi_class = class_create(THIS_MODULE, DRIVER_NAME);
-	if (IS_ERR(evdi_class)) {
-		ret = PTR_ERR(evdi_class);
-		evdi_err("Failed to create device class: %d", ret);
-		return ret;
-	}
 
-	evdi_sysfs_dev = device_create(evdi_class, NULL, MKDEV(0, 0), NULL, DRIVER_NAME);
+	evdi_sysfs_dev = root_device_register(DRIVER_NAME);
 	if (IS_ERR(evdi_sysfs_dev)) {
 		ret = PTR_ERR(evdi_sysfs_dev);
-		evdi_err("Failed to create sysfs device: %d", ret);
-		goto err_device;
+		evdi_err("Failed to register sysfs device: %d", ret);
+		return ret;
 	}
 
 	ret = sysfs_create_groups(&evdi_sysfs_dev->kobj, evdi_attr_groups);
 	if (ret) {
 		evdi_err("Failed to create sysfs attributes: %d", ret);
-		goto err_attrs;
+		goto err_device;
 	}
 
 	evdi_info("Sysfs interface created at /sys/devices/%s/", DRIVER_NAME);
 	return 0;
 
-err_attrs:
-	device_destroy(evdi_class, MKDEV(0, 0));
 err_device:
-	class_destroy(evdi_class);
+	root_device_unregister(evdi_sysfs_dev);
+	evdi_sysfs_dev = NULL;
 	return ret;
 }
 
@@ -155,11 +149,8 @@ void evdi_sysfs_cleanup(void)
 {
 	if (evdi_sysfs_dev) {
 		sysfs_remove_groups(&evdi_sysfs_dev->kobj, evdi_attr_groups);
-		device_destroy(evdi_class, MKDEV(0, 0));
-	}
-
-	if (evdi_class) {
-		class_destroy(evdi_class);
+		root_device_unregister(evdi_sysfs_dev);
+		evdi_sysfs_dev = NULL;
 	}
 
 	evdi_info("Sysfs interface cleaned up");
