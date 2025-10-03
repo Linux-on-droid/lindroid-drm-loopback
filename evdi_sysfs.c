@@ -6,6 +6,7 @@
 #include "evdi_drv.h"
 #include <linux/device.h>
 #include <linux/sysfs.h>
+#include <linux/stat.h>
 #include <linux/platform_device.h>
 
 static struct device *evdi_sysfs_dev;
@@ -53,10 +54,17 @@ static ssize_t add_store(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-static DEVICE_ATTR_RW(add);
+/* HACK: Make 'add' world-writable so users can add evdi devices. */
+static struct device_attribute dev_attr_add_0666 = {
+	.attr = {
+		.name = "add",
+		.mode = 0666,
+	},
+	.show = add_show,
+	.store = add_store,
+};
 
 static struct attribute *evdi_sysfs_attrs[] = {
-	&dev_attr_add.attr,
 	NULL,
 };
 
@@ -136,9 +144,17 @@ int evdi_sysfs_init(void)
 		goto err_device;
 	}
 
+	ret = device_create_file(evdi_sysfs_dev, &dev_attr_add_0666);
+	if (ret) {
+		evdi_err("Failed to create writable 'add' attribute: %d", ret);
+		goto err_groups;
+	}
+
 	evdi_info("Sysfs interface created at /sys/devices/%s/", DRIVER_NAME);
 	return 0;
 
+err_groups:
+	sysfs_remove_groups(&evdi_sysfs_dev->kobj, evdi_attr_groups);
 err_device:
 	root_device_unregister(evdi_sysfs_dev);
 	evdi_sysfs_dev = NULL;
@@ -148,6 +164,7 @@ err_device:
 void evdi_sysfs_cleanup(void)
 {
 	if (evdi_sysfs_dev) {
+		device_remove_file(evdi_sysfs_dev, &dev_attr_add_0666);
 		sysfs_remove_groups(&evdi_sysfs_dev->kobj, evdi_attr_groups);
 		root_device_unregister(evdi_sysfs_dev);
 		evdi_sysfs_dev = NULL;
