@@ -215,6 +215,7 @@ int evdi_ioctl_swap_callback(struct drm_device *dev, void *data, struct drm_file
 int evdi_ioctl_create_buff_callback(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_ioctl_gbm_create_buff(struct drm_device *dev, void *data, struct drm_file *file);
 void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owner);
+int evdi_ioctl_gbm_del_buff(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_queue_swap_event(struct evdi_device *evdi, int id, struct drm_file *owner);
 
 /* evdi_event.c */

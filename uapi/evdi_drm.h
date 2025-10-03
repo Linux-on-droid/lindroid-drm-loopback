@@ -78,6 +78,10 @@ struct drm_evdi_gbm_get_buff {
 	void *native_handle;
 };
 
+struct drm_evdi_gbm_del_buff {
+	int id;
+};
+
 #define DRM_EVDI_CONNECT                    0x00
 #define DRM_EVDI_REQUEST_UPDATE             0x01  /* Unused by create-disp */
 #define DRM_EVDI_GRABPIX                    0x02  /* Unused by create-disp */
@@ -119,5 +123,8 @@ struct drm_evdi_gbm_get_buff {
 
 #define DRM_IOCTL_EVDI_GBM_CREATE_BUFF_CALLBACK DRM_IOWR(DRM_COMMAND_BASE + \
 	DRM_EVDI_GBM_CREATE_BUFF_CALLBACK, struct drm_evdi_create_buff_callabck)
+
+#define DRM_IOCTL_EVDI_GBM_DEL_BUFF DRM_IOWR(DRM_COMMAND_BASE + \
+	DRM_EVDI_GBM_DEL_BUFF, struct drm_evdi_gbm_del_buff)
 
 #endif /* __UAPI_EVDI_DRM_H__ */

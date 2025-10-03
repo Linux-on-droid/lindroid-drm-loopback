@@ -510,6 +510,34 @@ int evdi_ioctl_create_buff_callback(struct drm_device *dev, void *data, struct d
 	return 0;
 }
 
+int evdi_ioctl_gbm_del_buff(struct drm_device *dev, void *data, struct drm_file *file)
+{
+	struct evdi_device *evdi = dev->dev_private;
+	struct drm_evdi_gbm_del_buff *cmd = data;
+	struct evdi_inflight_req *req;
+	int poll_id;
+	long ret;
+
+	req = evdi_inflight_alloc(evdi, file, destroy_buf, &poll_id);
+	if (unlikely(!req))
+		return -ENOMEM;
+
+	ret = evdi_queue_destroy_event(evdi, cmd->id, file);
+	if (ret) {
+		kfree(req);
+		return ret;
+	}
+
+	ret = wait_for_completion_interruptible_timeout(&req->done, EVDI_WAIT_TIMEOUT);
+	if (ret <= 0) {
+		kfree(req);
+		return ret == 0 ? -ETIMEDOUT : (int)ret;
+	}
+
+	kfree(req);
+	return 0;
+}
+
 const struct drm_ioctl_desc evdi_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(EVDI_CONNECT, evdi_ioctl_connect,
 			 DRM_UNLOCKED),
@@ -528,6 +556,8 @@ const struct drm_ioctl_desc evdi_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(EVDI_SWAP_CALLBACK, evdi_ioctl_swap_callback,
 			 DRM_UNLOCKED),
 	DRM_IOCTL_DEF_DRV(EVDI_GBM_CREATE_BUFF_CALLBACK, evdi_ioctl_create_buff_callback,
+			 DRM_UNLOCKED),
+	DRM_IOCTL_DEF_DRV(EVDI_GBM_DEL_BUFF, evdi_ioctl_gbm_del_buff,
 			 DRM_UNLOCKED),
 };
 
