@@ -14,6 +14,7 @@
 #include <linux/errno.h>
 
 static int evdi_queue_create_event_with_id(struct evdi_device *evdi, struct drm_evdi_gbm_create_buff *params, struct drm_file *owner, int poll_id);
+int evdi_queue_destroy_event(struct evdi_device *evdi, int id, struct drm_file *owner);
 static struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *evdi,
 						     struct drm_file *owner,
 						     int type,
@@ -420,11 +421,17 @@ int evdi_ioctl_gbm_create_buff(struct drm_device *dev, void *data, struct drm_fi
 int evdi_ioctl_add_buff_callback(struct drm_device *dev, void *data, struct drm_file *file)
 {
 	struct evdi_device *evdi = dev->dev_private;
+	struct drm_evdi_add_buff_callabck *cb = data;
+	struct evdi_inflight_req *req;
 
 	atomic64_inc(&evdi_perf.ioctl_calls[2]);
 
-	wake_up_interruptible(&evdi->events.wait_queue);
+	req = evdi_inflight_take(evdi, cb->poll_id);
+	if (likely(req)) {
+		complete_all(&req->done);
+	}
 
+	wake_up_interruptible(&evdi->events.wait_queue);
 	return 0;
 }
 
@@ -473,8 +480,15 @@ int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_
 int evdi_ioctl_destroy_buff_callback(struct drm_device *dev, void *data, struct drm_file *file)
 {
 	struct evdi_device *evdi = dev->dev_private;
+	struct drm_evdi_destroy_buff_callback *cb = data;
+	struct evdi_inflight_req *req;
 
 	atomic64_inc(&evdi_perf.ioctl_calls[4]);
+
+	req = evdi_inflight_take(evdi, cb->poll_id);
+	if (likely(req)) {
+		complete_all(&req->done);
+	}
 
 	wake_up_interruptible(&evdi->events.wait_queue);
 
@@ -484,8 +498,15 @@ int evdi_ioctl_destroy_buff_callback(struct drm_device *dev, void *data, struct 
 int evdi_ioctl_swap_callback(struct drm_device *dev, void *data, struct drm_file *file)
 {
 	struct evdi_device *evdi = dev->dev_private;
+	struct drm_evdi_swap_callback *cb = data;
+	struct evdi_inflight_req *req;
 
 	atomic64_inc(&evdi_perf.ioctl_calls[5]);
+
+	req = evdi_inflight_take(evdi, cb->poll_id);
+	if (likely(req)) {
+		complete_all(&req->done);
+	}
 
 	wake_up_interruptible(&evdi->events.wait_queue);
 
