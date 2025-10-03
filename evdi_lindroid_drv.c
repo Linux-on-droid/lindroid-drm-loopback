@@ -13,6 +13,7 @@ extern const struct drm_ioctl_desc evdi_ioctls[];
 extern const int evdi_num_ioctls;
 extern const struct drm_ioctl_desc *evdi_get_ioctls(void);
 extern int evdi_get_num_ioctls(void);
+extern void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owner);
 
 atomic_t evdi_device_count = ATOMIC_INIT(0);
 
@@ -68,6 +69,9 @@ static void evdi_driver_postclose(struct drm_device *dev, struct drm_file *file)
 {
 	struct evdi_device *evdi = dev->dev_private;
 
+	if (dev && dev->dev_private)
+		evdi_inflight_discard_owner(evdi, file);
+
 	evdi_event_cleanup_file(evdi, file);
 
 	evdi_debug("Device %d closed by process %d", evdi->dev_index, current->pid);
@@ -89,9 +93,12 @@ int evdi_device_init(struct evdi_device *evdi, struct platform_device *pdev)
 
 #ifdef EVDI_HAVE_XARRAY
 	xa_init(&evdi->file_xa);
+	xa_init(&evdi->inflight_xa);
 #else
 	idr_init(&evdi->file_idr);
 	spin_lock_init(&evdi->file_lock);
+	idr_init(&evdi->inflight_idr);
+	spin_lock_init(&evdi->inflight_lock);
 #endif
 
 	ret = evdi_event_init(evdi);
@@ -106,8 +113,10 @@ int evdi_device_init(struct evdi_device *evdi, struct platform_device *pdev)
 err_event:
 #ifdef EVDI_HAVE_XARRAY
 	xa_destroy(&evdi->file_xa);
+	xa_destroy(&evdi->inflight_xa);
 #else
 	idr_destroy(&evdi->file_idr);
+	idr_destroy(&evdi->inflight_idr);
 #endif
 	return ret;
 }

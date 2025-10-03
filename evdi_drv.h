@@ -15,6 +15,7 @@
 #include <linux/wait.h>
 #include <linux/poll.h>
 #include <linux/workqueue.h>
+#include <linux/jiffies.h>
 
 #if KERNEL_VERSION(5, 5, 0) <= LINUX_VERSION_CODE
 #include <drm/drm_drv.h>
@@ -66,6 +67,8 @@
 #define DRIVER_MINOR 0
 #define DRIVER_PATCHLEVEL 0
 
+#define EVDI_WAIT_TIMEOUT	msecs_to_jiffies(5000)
+
 struct evdi_device;
 
 struct evdi_event_pool {
@@ -83,6 +86,18 @@ struct evdi_event {
 	bool from_pool;
 	struct drm_file *owner;
 	struct evdi_device *evdi;
+};
+
+struct evdi_inflight_req {
+	int type;
+	struct completion done;
+	struct drm_file *owner;
+	union {
+		struct {
+			int id;
+			u32 stride;
+		} create;
+	} reply;
 };
 
 struct evdi_device {
@@ -118,9 +133,12 @@ struct evdi_device {
 
 #ifdef EVDI_HAVE_XARRAY
 	struct xarray file_xa;
+	struct xarray inflight_xa;
 #else
 	struct idr file_idr;
 	spinlock_t file_lock;
+	struct idr inflight_idr;
+	spinlock_t inflight_lock;
 #endif
 };
 
@@ -154,6 +172,8 @@ int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_
 int evdi_ioctl_destroy_buff_callback(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_ioctl_swap_callback(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_ioctl_create_buff_callback(struct drm_device *dev, void *data, struct drm_file *file);
+int evdi_ioctl_gbm_create_buff(struct drm_device *dev, void *data, struct drm_file *file);
+void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owner);
 
 /* evdi_event.c */
 int evdi_event_init(struct evdi_device *evdi);

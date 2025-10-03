@@ -111,6 +111,9 @@ struct drm_evdi_gbm_get_buff {
 #define DRM_IOCTL_EVDI_SWAP_CALLBACK DRM_IOWR(DRM_COMMAND_BASE + \
 	DRM_EVDI_SWAP_CALLBACK, struct drm_evdi_swap_callback)
 
+#define DRM_IOCTL_EVDI_GBM_CREATE_BUFF DRM_IOWR(DRM_COMMAND_BASE +  \
+			DRM_EVDI_GBM_CREATE_BUFF, struct drm_evdi_gbm_create_buff)
+
 #define DRM_IOCTL_EVDI_GBM_CREATE_BUFF_CALLBACK DRM_IOWR(DRM_COMMAND_BASE + \
 	DRM_EVDI_GBM_CREATE_BUFF_CALLBACK, struct drm_evdi_create_buff_callabck)
 
