@@ -6,6 +6,8 @@
 #include "evdi_drv.h"
 #include <linux/sched.h>
 #include <linux/prefetch.h>
+#include <linux/jiffies.h>
+#include <linux/uaccess.h>
 
 static struct evdi_event_pool global_event_pool;
 
@@ -26,6 +28,20 @@ int evdi_event_system_init(void)
 	memset(&evdi_perf, 0, sizeof(evdi_perf));
 
 	evdi_info("Event system initialized with slab cache");
+
+	/* Pre-warm cache */
+	{
+		const int prealloc = 256;
+		int i;
+		void *tmp;
+		for (i = 0; i < prealloc; i++) {
+			tmp = kmem_cache_alloc(global_event_pool.cache, GFP_NOWAIT);
+			if (!tmp)
+				break;
+			kmem_cache_free(global_event_pool.cache, tmp);
+		}
+	}
+
 	return 0;
 }
 
@@ -66,7 +82,7 @@ void evdi_event_cleanup(struct evdi_device *evdi)
 
 	atomic_set(&evdi->events.stopping, 1);
 
-	wake_up_interruptible_all(&evdi->events.wait_queue);
+	wake_up_interruptible(&evdi->events.wait_queue);
 
 	event = evdi->events.head;
 	while (event) {
@@ -95,6 +111,7 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 	event = kmem_cache_alloc(global_event_pool.cache, GFP_ATOMIC);
 	if (likely(event)) {
 		atomic64_inc(&evdi->events.pool_hits);
+		atomic64_inc(&evdi_perf.pool_alloc_fast);
 		event->from_pool = true;
 	} else {
 		event = kmalloc(sizeof(*event), GFP_KERNEL);
@@ -102,6 +119,7 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 			atomic64_inc(&evdi->events.pool_misses);
 			return NULL;
 		}
+		atomic64_inc(&evdi_perf.pool_alloc_slow);
 		event->from_pool = false;
 	}
 
@@ -173,7 +191,7 @@ void evdi_event_queue(struct evdi_device *evdi, struct evdi_event *event)
 	atomic64_inc(&evdi->events.events_queued);
 	atomic64_inc(&evdi_perf.event_queue_ops);
 
-	wake_up_interruptible_all(&evdi->events.wait_queue);
+	wake_up_interruptible(&evdi->events.wait_queue);
 	atomic64_inc(&evdi_perf.wakeup_count);
 }
 
@@ -206,6 +224,75 @@ struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi)
 	atomic64_inc(&evdi_perf.event_dequeue_ops);
 
 	return head;
+}
+
+static struct evdi_event *evdi_event_wait_dequeue(struct evdi_device *evdi,
+						  struct drm_file *owner)
+{
+	struct evdi_event *evt;
+	long ret;
+
+	evt = evdi_event_dequeue(evdi);
+	if (evt)
+		return evt;
+
+	ret = wait_event_interruptible_timeout(evdi->events.wait_queue,
+					       evdi->events.head ||
+					       atomic_read(&evdi->events.stopping),
+					       msecs_to_jiffies(16));
+	if (ret < 0)
+		return NULL;
+
+	if (atomic_read(&evdi->events.stopping))
+		return NULL;
+
+	return evdi_event_dequeue(evdi);
+}
+
+ssize_t evdi_event_read(struct file *file, char __user *buf, size_t len, loff_t *ppos)
+{
+	struct drm_file *drmfile = file->private_data;
+	struct drm_device *ddev = drmfile->minor->dev;
+	struct evdi_device *evdi = ddev->dev_private;
+	struct evdi_event *evt;
+	size_t copy;
+
+	if (!READ_ONCE(evdi->events.head)) {
+		if (file->f_flags & O_NONBLOCK)
+			return -EAGAIN;
+		evt = evdi_event_wait_dequeue(evdi, drmfile);
+		if (!evt)
+			return -ERESTARTSYS;
+	} else {
+		evt = evdi_event_dequeue(evdi);
+		if (!evt)
+			return -EAGAIN;
+	}
+
+	copy = evt->data_size < len ? evt->data_size : len;
+	if (copy && evt->data) {
+		if (copy_to_user(buf, evt->data, copy)) {
+			evdi_event_free(evt);
+			return -EFAULT;
+		}
+	}
+
+	evdi_event_free(evt);
+	return (ssize_t)copy;
+}
+
+unsigned int evdi_event_poll(struct file *file, poll_table *wait)
+{
+	struct drm_file *drmfile = file->private_data;
+	struct drm_device *ddev = drmfile->minor->dev;
+	struct evdi_device *evdi = ddev->dev_private;
+	unsigned int mask = 0;
+
+	poll_wait(file, &evdi->events.wait_queue, wait);
+	if (READ_ONCE(evdi->events.head))
+		mask |= POLLIN | POLLRDNORM;
+
+	return mask;
 }
 
 void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file)

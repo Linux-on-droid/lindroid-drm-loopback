@@ -18,7 +18,7 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 		evdi->connected = false;
 		atomic_set(&evdi->events.stopping, 1);
 
-		wake_up_interruptible_all(&evdi->events.wait_queue);
+		wake_up_interruptible(&evdi->events.wait_queue);
 
 		evdi_info("Device %d disconnected", evdi->dev_index);
 		return 0;
@@ -94,7 +94,7 @@ int evdi_ioctl_add_buff_callback(struct drm_device *dev, void *data, struct drm_
 
 	atomic64_inc(&evdi_perf.ioctl_calls[2]);
 
-	wake_up_interruptible_all(&evdi->events.wait_queue);
+	wake_up_interruptible(&evdi->events.wait_queue);
 
 	return 0;
 }
@@ -105,7 +105,7 @@ int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_
 
 	atomic64_inc(&evdi_perf.ioctl_calls[3]);
 
-	wake_up_interruptible_all(&evdi->events.wait_queue);
+	wake_up_interruptible(&evdi->events.wait_queue);
 
 	return 0;
 }
@@ -116,7 +116,7 @@ int evdi_ioctl_destroy_buff_callback(struct drm_device *dev, void *data, struct 
 
 	atomic64_inc(&evdi_perf.ioctl_calls[4]);
 
-	wake_up_interruptible_all(&evdi->events.wait_queue);
+	wake_up_interruptible(&evdi->events.wait_queue);
 
 	return 0;
 }
@@ -127,7 +127,7 @@ int evdi_ioctl_swap_callback(struct drm_device *dev, void *data, struct drm_file
 
 	atomic64_inc(&evdi_perf.ioctl_calls[5]);
 
-	wake_up_interruptible_all(&evdi->events.wait_queue);
+	wake_up_interruptible(&evdi->events.wait_queue);
 
 	return 0;
 }
@@ -138,12 +138,12 @@ int evdi_ioctl_create_buff_callback(struct drm_device *dev, void *data, struct d
 
 	atomic64_inc(&evdi_perf.ioctl_calls[6]);
 
-	wake_up_interruptible_all(&evdi->events.wait_queue);
+	wake_up_interruptible(&evdi->events.wait_queue);
 
 	return 0;
 }
 
-static const struct drm_ioctl_desc evdi_ioctls[] = {
+const struct drm_ioctl_desc evdi_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(EVDI_CONNECT, evdi_ioctl_connect,
 			 DRM_UNLOCKED),
 	DRM_IOCTL_DEF_DRV(EVDI_POLL, evdi_ioctl_poll,
@@ -160,6 +160,8 @@ static const struct drm_ioctl_desc evdi_ioctls[] = {
 			 DRM_UNLOCKED),
 };
 
+const int evdi_num_ioctls = ARRAY_SIZE(evdi_ioctls);
+
 const struct drm_ioctl_desc *evdi_get_ioctls(void)
 {
 	return evdi_ioctls;
@@ -167,7 +169,7 @@ const struct drm_ioctl_desc *evdi_get_ioctls(void)
 
 int evdi_get_num_ioctls(void)
 {
-	return ARRAY_SIZE(evdi_ioctls);
+	return evdi_num_ioctls;
 }
 
 int evdi_queue_add_buf_event(struct evdi_device *evdi, int fd_data, struct drm_file *owner)

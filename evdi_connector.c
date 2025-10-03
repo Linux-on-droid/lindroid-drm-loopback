@@ -116,6 +116,9 @@ int evdi_connector_init(struct drm_device *dev, struct evdi_device *evdi)
 	connector->interlace_allowed = false;
 	connector->doublescan_allowed = false;
 
+	connector->polled = DRM_CONNECTOR_POLL_CONNECT |
+			    DRM_CONNECTOR_POLL_DISCONNECT;
+
 	drm_connector_helper_add(connector, &evdi_connector_helper_funcs);
 
 	evdi->connector = connector;

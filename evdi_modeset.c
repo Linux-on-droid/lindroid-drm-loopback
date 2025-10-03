@@ -4,15 +4,36 @@
  */
 
 #include "evdi_drv.h"
+#include <drm/drm_gem_framebuffer_helper.h>
 
 static const struct drm_mode_config_funcs evdi_mode_config_funcs = {
 #if EVDI_HAVE_ATOMIC_HELPERS
-    .fb_create     = NULL,
-    .atomic_check  = drm_atomic_helper_check,
-    .atomic_commit = drm_atomic_helper_commit,
+	.fb_create	= drm_gem_fb_create,
+	.atomic_check	= drm_atomic_helper_check,
+	.atomic_commit	= drm_atomic_helper_commit,
 #else
-    .fb_create     = NULL,
+	.fb_create	= drm_gem_fb_create,
 #endif
+};
+
+static const uint32_t evdi_formats[] = {
+	DRM_FORMAT_XRGB8888,
+	DRM_FORMAT_ARGB8888,
+};
+
+static void evdi_pipe_enable(struct drm_simple_display_pipe *pipe,
+			     struct drm_crtc_state *crtc_state,
+			     struct drm_plane_state *plane_state)
+{
+}
+
+static void evdi_pipe_disable(struct drm_simple_display_pipe *pipe)
+{
+}
+
+static const struct drm_simple_display_pipe_funcs evdi_pipe_funcs = {
+	.enable		= evdi_pipe_enable,
+	.disable	= evdi_pipe_disable,
 };
 
 int evdi_modeset_init(struct drm_device *dev)
@@ -20,11 +41,7 @@ int evdi_modeset_init(struct drm_device *dev)
 	struct evdi_device *evdi = dev->dev_private;
 	int ret;
 
-#ifdef EVDI_HAVE_DRM_MANAGED
-	ret = drmm_mode_config_init(dev);
-#else
 	ret = drm_mode_config_init(dev);
-#endif
 	if (ret) {
 		evdi_err("Failed to initialize mode config: %d", ret);
 		return ret;
@@ -46,16 +63,12 @@ int evdi_modeset_init(struct drm_device *dev)
 		goto err_connector;
 	}
 
-	ret = evdi_encoder_init(dev, evdi);
+	ret = drm_simple_display_pipe_init(dev, &evdi->pipe, &evdi_pipe_funcs,
+					   evdi_formats, ARRAY_SIZE(evdi_formats),
+					   NULL, evdi->connector);
 	if (ret) {
-		evdi_err("Failed to initialize encoder: %d", ret);
-		goto err_encoder;
-	}
-
-	ret = evdi_crtc_init(dev, evdi);
-	if (ret) {
-		evdi_err("Failed to initialize CRTC: %d", ret);
-		goto err_crtc;
+		evdi_err("Failed to initialize simple display pipe: %d", ret);
+		goto err_pipe;
 	}
 
 	drm_connector_attach_encoder(evdi->connector, evdi->encoder);
@@ -63,9 +76,7 @@ int evdi_modeset_init(struct drm_device *dev)
 	evdi_info("Modeset initialized for device %d", evdi->dev_index);
 	return 0;
 
-err_crtc:
-	evdi_encoder_cleanup(evdi);
-err_encoder:
+err_pipe:
 	evdi_connector_cleanup(evdi);
 err_connector:
 	drm_mode_config_cleanup(dev);
@@ -77,71 +88,8 @@ void evdi_modeset_cleanup(struct drm_device *dev)
 	struct evdi_device *evdi = dev->dev_private;
 
 	evdi_connector_cleanup(evdi);
-	evdi_encoder_cleanup(evdi);
 
 	drm_mode_config_cleanup(dev);
 
 	evdi_debug("Modeset cleaned up for device %d", evdi->dev_index);
-}
-
-static void evdi_crtc_atomic_enable(struct drm_crtc *crtc,
-				   struct drm_atomic_state *state)
-{
-}
-
-static void evdi_crtc_atomic_disable(struct drm_crtc *crtc,
-					struct drm_atomic_state *state)
-{
-}
-
-#if EVDI_HAVE_ATOMIC_HELPERS
-static const struct drm_crtc_helper_funcs evdi_crtc_helper_funcs = {
-	.atomic_enable = evdi_crtc_atomic_enable,
-	.atomic_disable = evdi_crtc_atomic_disable,
-};
-
-static const struct drm_crtc_funcs evdi_crtc_funcs = {
-	.set_config = drm_atomic_helper_set_config,
-	.page_flip = drm_atomic_helper_page_flip,
-	.destroy = drm_crtc_cleanup,
-	.reset = drm_atomic_helper_crtc_reset,
-	.atomic_duplicate_state = drm_atomic_helper_crtc_duplicate_state,
-	.atomic_destroy_state = drm_atomic_helper_crtc_destroy_state,
-};
-#else
-static const struct drm_crtc_helper_funcs evdi_crtc_helper_funcs = {
-};
-
-static const struct drm_crtc_funcs evdi_crtc_funcs = {
-	.destroy = drm_crtc_cleanup,
-};
-#endif
-
-int evdi_crtc_init(struct drm_device *dev, struct evdi_device *evdi)
-{
-	struct drm_crtc *crtc;
-	int ret;
-
-	crtc = kzalloc(sizeof(*crtc), GFP_KERNEL);
-	if (!crtc)
-		return -ENOMEM;
-
-#if EVDI_HAVE_ATOMIC_HELPERS
-	ret = drm_crtc_init_with_planes(dev, crtc, NULL, NULL,
-				   &evdi_crtc_funcs, NULL);
-#else
-	ret = drm_crtc_init(dev, crtc, &evdi_crtc_funcs);
-#endif
-	if (ret) {
-		evdi_err("Failed to initialize CRTC: %d", ret);
-		kfree(crtc);
-		return ret;
-	}
-
-	drm_crtc_helper_add(crtc, &evdi_crtc_helper_funcs);
-
-	evdi->crtc = crtc;
-
-	evdi_debug("CRTC initialized for device %d", evdi->dev_index);
-	return 0;
 }

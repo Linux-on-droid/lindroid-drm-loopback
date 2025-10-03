@@ -11,6 +11,7 @@
 #include <linux/atomic.h>
 #include <linux/completion.h>
 #include <linux/slab.h>
+#include <linux/fs.h>
 #include <linux/wait.h>
 #include <linux/poll.h>
 #include <linux/workqueue.h>
@@ -38,6 +39,8 @@
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_probe_helper.h>
 #endif
+
+#include <drm/drm_simple_kms_helper.h>
 
 #if KERNEL_VERSION(5, 0, 0) <= LINUX_VERSION_CODE
 #include <linux/xarray.h>
@@ -86,7 +89,7 @@ struct evdi_device {
 	struct drm_device *ddev;
 	struct drm_connector *connector;
 	struct drm_encoder *encoder;
-	struct drm_crtc *crtc;
+	struct drm_simple_display_pipe pipe;
 
 	int dev_index;
 
@@ -121,6 +124,9 @@ struct evdi_device {
 #endif
 };
 
+ssize_t evdi_event_read(struct file *file, char __user *buf, size_t len, loff_t *ppos);
+unsigned int evdi_event_poll(struct file *file, poll_table *wait);
+
 extern struct evdi_event_pool *evdi_global_event_pool;
 extern atomic_t evdi_device_count;
 
@@ -131,7 +137,6 @@ void evdi_device_cleanup(struct evdi_device *evdi);
 /* evdi_modeset.c */
 int evdi_modeset_init(struct drm_device *dev);
 void evdi_modeset_cleanup(struct drm_device *dev);
-int evdi_crtc_init(struct drm_device *dev, struct evdi_device *evdi);
 
 /* evdi_connector.c */
 int evdi_connector_init(struct drm_device *dev, struct evdi_device *evdi);

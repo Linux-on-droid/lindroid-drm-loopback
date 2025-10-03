@@ -9,6 +9,8 @@
 
 extern int evdi_event_system_init(void);
 extern void evdi_event_system_cleanup(void);
+extern const struct drm_ioctl_desc evdi_ioctls[];
+extern const int evdi_num_ioctls;
 extern const struct drm_ioctl_desc *evdi_get_ioctls(void);
 extern int evdi_get_num_ioctls(void);
 
@@ -23,9 +25,9 @@ static const struct file_operations evdi_fops = {
 	.open = drm_open,
 	.release = drm_release,
 	.unlocked_ioctl = drm_ioctl,
-	.poll = drm_poll,
-	.read = drm_read,
 	.llseek = noop_llseek,
+	.poll = evdi_event_poll,
+	.read = evdi_event_read,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl = drm_compat_ioctl,
 #endif
@@ -163,6 +165,8 @@ static int evdi_platform_probe(struct platform_device *pdev)
 	drm_mode_config_reset(ddev);
 #endif
 
+	drm_kms_helper_poll_init(ddev);
+
 	ret = drm_dev_register(ddev, 0);
 	if (ret) {
 		evdi_err("Failed to register DRM device: %d", ret);
@@ -175,6 +179,7 @@ static int evdi_platform_probe(struct platform_device *pdev)
 	return 0;
 
 err_register:
+	drm_kms_helper_poll_fini(ddev);
 	evdi_modeset_cleanup(ddev);
 err_modeset:
 #ifndef EVDI_HAVE_DRM_MANAGED
@@ -199,6 +204,8 @@ static int evdi_platform_remove(struct platform_device *pdev)
 #if EVDI_HAVE_ATOMIC_HELPERS
 	drm_atomic_helper_shutdown(ddev);
 #endif
+
+	drm_kms_helper_poll_fini(ddev);
 
 	evdi_modeset_cleanup(ddev);
 
