@@ -26,10 +26,12 @@ static void evdi_pipe_enable(struct drm_simple_display_pipe *pipe,
 			     struct drm_crtc_state *crtc_state,
 			     struct drm_plane_state *plane_state)
 {
+	drm_crtc_vblank_on(&pipe->crtc);
 }
 
 static void evdi_pipe_disable(struct drm_simple_display_pipe *pipe)
 {
+	drm_crtc_vblank_off(&pipe->crtc);
 }
 
 static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
@@ -39,8 +41,20 @@ static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 	struct evdi_device *evdi = pipe->plane.dev->dev_private;
 	struct drm_framebuffer *old_fb = old_state ? old_state->fb : NULL;
 	struct drm_framebuffer *new_fb = state ? state->fb : NULL;
+	struct drm_pending_vblank_event *vblank_ev;
+	struct drm_device *ddev;
+	unsigned long flags;
 
 	if (new_fb && new_fb != old_fb) {
+		drm_crtc_handle_vblank(&pipe->crtc);
+		if (pipe->crtc.state && pipe->crtc.state->event) {
+			ddev = pipe->crtc.dev;
+			vblank_ev = pipe->crtc.state->event;
+			spin_lock_irqsave(&ddev->event_lock, flags);
+			pipe->crtc.state->event = NULL;
+			drm_crtc_send_vblank_event(&pipe->crtc, vblank_ev);
+			spin_unlock_irqrestore(&ddev->event_lock, flags);
+		}
 		evdi_queue_swap_event(evdi, 0, NULL);
 		if (atomic_xchg(&evdi->update_requested, 0)) {
 			evdi_send_drm_update_ready_async(evdi);
