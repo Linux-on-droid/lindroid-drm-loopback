@@ -177,42 +177,89 @@ static struct evdi_inflight_req *evdi_inflight_take(struct evdi_device *evdi, in
 
 void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owner)
 {
+	struct evdi_inflight_req *taken = NULL;
+	struct evdi_inflight_req *req;
 #ifdef EVDI_HAVE_XARRAY
 	unsigned long index;
 	void *entry;
-	xa_for_each(&evdi->inflight_xa, index, entry) {
-		struct evdi_inflight_req *req = entry;
-		if (req && req->owner == owner) {
-			xa_erase(&evdi->inflight_xa, index);
-			complete_all(&req->done);
-			kfree(req);
-		}
-	}
+#ifndef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
+	bool found = false;
+	unsigned long flags;
+#endif
 #else
-	int max = INT_MAX;
-	int id = 1;
-	struct evdi_inflight_req *req;
+	int id = 0;
+	int victim = -1;
+#endif
 
-	while (id < max) {
-		bool found = false;
-		struct evdi_inflight_req *req;
-		spin_lock(&evdi->inflight_lock);
-		id = idr_get_next(&evdi->inflight_idr, &id);
-		if (id < 0 || id >= max)
+#ifdef EVDI_HAVE_XARRAY
+#ifdef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
+	for (;;) {
+		rcu_read_lock();
+		xa_for_each(&evdi->inflight_xa, index, entry) {
+			req = entry;
+			if (!req || req->owner != owner)
+				continue;
+
+			if (xa_cmpxchg(&evdi->inflight_xa, index, req, NULL, GFP_ATOMIC) == req) {
+				taken = req;
+				break;
+			}
+		}
+		rcu_read_unlock();
+
+		if (!taken)
 			break;
 
-		req = idr_find(&evdi->inflight_idr, id);
-		if (req && req->owner == owner) {
-			idr_remove(&evdi->inflight_idr, id);
-			spin_unlock(&evdi->inflight_lock);
-			complete_all(&req->done);
-			kfree(req);
-			continue;
+		complete_all(&taken->done);
+		kfree(taken);
+		cond_resched();
+	}
+#else /* !EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED */
+	for (;;) {
+		xa_lock_irqsave(&evdi->inflight_xa, flags);
+		xa_for_each(&evdi->inflight_xa, index, entry) {
+			req = entry;
+			if (req && req->owner == owner) {
+				taken = xa_erase(&evdi->inflight_xa, index);
+				found = true;
+				break;
+			}
+		}
+		xa_unlock_irqrestore(&evdi->inflight_xa, flags);
+
+		if (!found || !taken)
+			break;
+
+		complete_all(&taken->done);
+		kfree(taken);
+		cond_resched();
+	}
+#endif /* EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED */
+#else /* !EVDI_HAVE_XARRAY */
+	for (;;) {
+		spin_lock(&evdi->inflight_lock);
+		for (;;) {
+			req = idr_get_next(&evdi->inflight_idr, &id);
+			if (!req)
+				break;
+
+			if (req->owner == owner) {
+				victim = id;
+				taken = idr_remove(&evdi->inflight_idr, victim);
+				break;
+			}
+			id++;
 		}
 		spin_unlock(&evdi->inflight_lock);
-		id++;
+
+		if (!taken)
+			break;
+
+		complete_all(&taken->done);
+		kfree(taken);
+		cond_resched();
 	}
-#endif
+#endif /* EVDI_HAVE_XARRAY */
 }
 
 static int evdi_queue_create_event_with_id(struct evdi_device *evdi,
