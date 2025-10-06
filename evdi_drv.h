@@ -240,10 +240,6 @@ void evdi_modeset_cleanup(struct drm_device *dev);
 int evdi_connector_init(struct drm_device *dev, struct evdi_device *evdi);
 void evdi_connector_cleanup(struct evdi_device *evdi);
 
-/* evdi_encoder.c */
-int evdi_encoder_init(struct drm_device *dev, struct evdi_device *evdi);
-void evdi_encoder_cleanup(struct evdi_device *evdi);
-
 /* evdi_ioctl.c */
 int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_ioctl_poll(struct drm_device *dev, void *data, struct drm_file *file);
