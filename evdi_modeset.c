@@ -81,6 +81,13 @@ int evdi_modeset_init(struct drm_device *dev)
 		goto err_connector;
 	}
 
+	ret = evdi_encoder_init(dev, evdi);
+	if (ret) {
+		evdi_err("Failed to initialize encoder: %d", ret);
+		goto err_encoder;
+	}
+
+	drm_connector_attach_encoder(evdi->connector, evdi->encoder);
 	ret = drm_simple_display_pipe_init(dev, &evdi->pipe, &evdi_pipe_funcs,
 					   evdi_formats, ARRAY_SIZE(evdi_formats),
 					   NULL, evdi->connector);
@@ -93,6 +100,8 @@ int evdi_modeset_init(struct drm_device *dev)
 	return 0;
 
 err_pipe:
+	evdi_encoder_cleanup(evdi);
+err_encoder:
 	evdi_connector_cleanup(evdi);
 err_connector:
 	drm_mode_config_cleanup(dev);
@@ -102,6 +111,8 @@ err_connector:
 void evdi_modeset_cleanup(struct drm_device *dev)
 {
 	struct evdi_device *evdi = dev->dev_private;
+
+	evdi_encoder_cleanup(evdi);
 
 	evdi_connector_cleanup(evdi);
 
