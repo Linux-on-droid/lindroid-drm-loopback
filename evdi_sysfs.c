@@ -8,8 +8,10 @@
 #include <linux/sysfs.h>
 #include <linux/stat.h>
 #include <linux/platform_device.h>
+#include <linux/idr.h>
 
 static struct device *evdi_sysfs_dev;
+static DEFINE_IDA(evdi_pdev_ida);
 
 static ssize_t add_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -21,7 +23,7 @@ static ssize_t add_store(struct device *dev, struct device_attribute *attr,
 {
 	struct platform_device *pdev;
 	struct device *parent = evdi_sysfs_dev;
-	int val, ret;
+	int val, ret, id;
 
 	ret = kstrtoint(buf, 10, &val);
 	if (ret) {
@@ -34,9 +36,24 @@ static ssize_t add_store(struct device *dev, struct device_attribute *attr,
 		return -EINVAL;
 	}
 
-	pdev = platform_device_alloc(DRIVER_NAME, PLATFORM_DEVID_AUTO);
+#if KERNEL_VERSION(6, 0, 0) <= LINUX_VERSION_CODE
+	id = ida_alloc_range(&evdi_pdev_ida, 0, INT_MAX, GFP_KERNEL);
+#else
+	id = ida_simple_get(&evdi_pdev_ida, 0, INT_MAX, GFP_KERNEL);
+#endif
+	if (id < 0) {
+		evdi_err("Failed to allocate device id: %d", id);
+		return id;
+	}
+
+	pdev = platform_device_alloc(DRIVER_NAME, id);
 	if (!pdev) {
 		evdi_err("Failed to allocate platform device");
+#if KERNEL_VERSION(6, 0, 0) <= LINUX_VERSION_CODE
+		ida_free(&evdi_pdev_ida, id);
+#else
+		ida_simple_remove(&evdi_pdev_ida, id);
+#endif
 		return -ENOMEM;
 	}
 
@@ -45,6 +62,11 @@ static ssize_t add_store(struct device *dev, struct device_attribute *attr,
 	if (ret) {
 		evdi_err("Failed to add platform device: %d", ret);
 		platform_device_put(pdev);
+#if KERNEL_VERSION(6, 0, 0) <= LINUX_VERSION_CODE
+		ida_free(&evdi_pdev_ida, id);
+#else
+		ida_simple_remove(&evdi_pdev_ida, id);
+#endif
 		return ret;
 	}
 
@@ -169,6 +191,7 @@ void evdi_sysfs_cleanup(void)
 		root_device_unregister(evdi_sysfs_dev);
 		evdi_sysfs_dev = NULL;
 	}
+	ida_destroy(&evdi_pdev_ida);
 
 	evdi_info("Sysfs interface cleaned up");
 }
