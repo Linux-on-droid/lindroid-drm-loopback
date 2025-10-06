@@ -361,23 +361,22 @@ static int evdi_queue_create_event_with_id(struct evdi_device *evdi,
 	return 0;
 }
 
-static int evdi_queue_get_buf_event_with_id(struct evdi_device *evdi,
-					   struct drm_evdi_gbm_get_buff *params,
-					   struct drm_file *owner,
-					   int poll_id)
+static int evdi_queue_struct_event_with_id(struct evdi_device *evdi,
+	void *params, size_t params_size,
+	enum poll_event_type type,
+	struct drm_file *owner,
+	int poll_id)
 {
 	struct evdi_event *event;
 	void *data;
 
-	data = kmalloc(sizeof(*params), GFP_ATOMIC);
+	data = kmalloc(params_size, GFP_ATOMIC);
 	if (!data)
 		return -ENOMEM;
 
-	memcpy(data, params, sizeof(*params));
+	memcpy(data, params, params_size);
 
-	event = evdi_event_alloc(evdi, get_buf,
-				 poll_id,
-				 data, sizeof(*params), owner);
+	event = evdi_event_alloc(evdi, type, poll_id, data, params_size, owner);
 	if (!event) {
 		kfree(data);
 		return -ENOMEM;
@@ -385,6 +384,15 @@ static int evdi_queue_get_buf_event_with_id(struct evdi_device *evdi,
 
 	evdi_event_queue(evdi, event);
 	return 0;
+}
+
+static int evdi_queue_get_buf_event_with_id(struct evdi_device *evdi,
+					    struct drm_evdi_gbm_get_buff *params,
+					    struct drm_file *owner,
+					    int poll_id)
+{
+	return evdi_queue_struct_event_with_id(evdi, params, sizeof(*params),
+					       get_buf, owner, poll_id);
 }
 
 int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file)
@@ -883,7 +891,8 @@ int evdi_get_num_ioctls(void)
 	return evdi_num_ioctls;
 }
 
-int evdi_queue_add_buf_event(struct evdi_device *evdi, int fd_data, struct drm_file *owner)
+static int evdi_queue_int_event(struct evdi_device *evdi,
+	enum poll_event_type type, int v, struct drm_file *owner)
 {
 	struct evdi_event *event;
 	void *data;
@@ -892,11 +901,12 @@ int evdi_queue_add_buf_event(struct evdi_device *evdi, int fd_data, struct drm_f
 	if (!data)
 		return -ENOMEM;
 
-	memcpy(data, &fd_data, sizeof(int));
+	memcpy(data, &v, sizeof(int));
 
-	event = evdi_event_alloc(evdi, add_buf,
-				atomic_inc_return(&evdi->events.next_poll_id),
-				data, sizeof(int), owner);
+	event = evdi_event_alloc(evdi, type,
+				 atomic_inc_return(&evdi->events.next_poll_id),
+				 data, sizeof(int), owner);
+
 	if (!event) {
 		kfree(data);
 		return -ENOMEM;
@@ -904,75 +914,26 @@ int evdi_queue_add_buf_event(struct evdi_device *evdi, int fd_data, struct drm_f
 
 	evdi_event_queue(evdi, event);
 	return 0;
+}
+
+int evdi_queue_add_buf_event(struct evdi_device *evdi, int fd_data, struct drm_file *owner)
+{
+	return evdi_queue_int_event(evdi, add_buf, fd_data, owner);
 }
 
 int evdi_queue_get_buf_event(struct evdi_device *evdi, int id, struct drm_file *owner)
 {
-	struct evdi_event *event;
-	void *data;
-
-	data = kmalloc(sizeof(int), GFP_ATOMIC);
-	if (!data)
-		return -ENOMEM;
-
-	memcpy(data, &id, sizeof(int));
-
-	event = evdi_event_alloc(evdi, get_buf,
-				atomic_inc_return(&evdi->events.next_poll_id),
-				data, sizeof(int), owner);
-	if (!event) {
-		kfree(data);
-		return -ENOMEM;
-	}
-
-	evdi_event_queue(evdi, event);
-	return 0;
+	return evdi_queue_int_event(evdi, get_buf, id, owner);
 }
 
 int evdi_queue_swap_event(struct evdi_device *evdi, int id, struct drm_file *owner)
 {
-	struct evdi_event *event;
-	void *data;
-
-	data = kmalloc(sizeof(int), GFP_ATOMIC);
-	if (!data)
-		return -ENOMEM;
-
-	memcpy(data, &id, sizeof(int));
-
-	event = evdi_event_alloc(evdi, swap_to,
-				atomic_inc_return(&evdi->events.next_poll_id),
-				data, sizeof(int), owner);
-	if (!event) {
-		kfree(data);
-		return -ENOMEM;
-	}
-
-	evdi_event_queue(evdi, event);
-	return 0;
+	return evdi_queue_int_event(evdi, swap_to, id, owner);
 }
 
 int evdi_queue_destroy_event(struct evdi_device *evdi, int id, struct drm_file *owner)
 {
-	struct evdi_event *event;
-	void *data;
-
-	data = kmalloc(sizeof(int), GFP_ATOMIC);
-	if (!data)
-		return -ENOMEM;
-
-	memcpy(data, &id, sizeof(int));
-
-	event = evdi_event_alloc(evdi, destroy_buf,
-				atomic_inc_return(&evdi->events.next_poll_id),
-				data, sizeof(int), owner);
-	if (!event) {
-		kfree(data);
-		return -ENOMEM;
-	}
-
-	evdi_event_queue(evdi, event);
-	return 0;
+	return evdi_queue_int_event(evdi, destroy_buf, id, owner);
 }
 
 int evdi_queue_create_event(struct evdi_device *evdi,
