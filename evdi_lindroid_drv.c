@@ -133,8 +133,8 @@ int evdi_device_init(struct evdi_device *evdi, struct platform_device *pdev)
 	mutex_init(&evdi->config_mutex);
 
 #ifdef EVDI_HAVE_XARRAY
-	xa_init(&evdi->file_xa);
-	xa_init(&evdi->inflight_xa);
+	xa_init_flags(&evdi->file_xa, XA_FLAGS_ALLOC);
+	xa_init_flags(&evdi->inflight_xa, XA_FLAGS_ALLOC);
 	evdi->inflight_next_id = 1;
 #else
 	idr_init(&evdi->file_idr);
