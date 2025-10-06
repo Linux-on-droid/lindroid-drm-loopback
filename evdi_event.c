@@ -102,14 +102,16 @@ void evdi_event_system_cleanup(void)
 
 int evdi_event_init(struct evdi_device *evdi)
 {
+	if (unlikely(!evdi))
+		return -EINVAL;
+
 	evdi->events.head = NULL;
 	evdi->events.tail = NULL;
-
-	init_waitqueue_head(&evdi->events.wait_queue);
-
 	atomic_set(&evdi->events.queue_size, 0);
 	atomic_set(&evdi->events.next_poll_id, 1);
 	atomic_set(&evdi->events.stopping, 0);
+
+	init_waitqueue_head(&evdi->events.wait_queue);
 
 	atomic64_set(&evdi->events.events_queued, 0);
 	atomic64_set(&evdi->events.events_dequeued, 0);

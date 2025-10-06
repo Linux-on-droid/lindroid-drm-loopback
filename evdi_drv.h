@@ -337,6 +337,8 @@ static __always_inline void evdi_smp_rmb(void)
 #define EVDI_HAVE_CONNECTOR_INIT_WITH_DDC 0
 #endif
 
+#define EVDI_MAX_INFLIGHT_REQUESTS 1000
+
 /* Debug and statistics */
 #ifdef DEBUG
 #define evdi_debug(fmt, ...) \
