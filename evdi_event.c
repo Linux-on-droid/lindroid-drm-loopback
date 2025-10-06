@@ -9,29 +9,43 @@
 #include <linux/jiffies.h>
 #include <linux/uaccess.h>
 
-static struct evdi_event_pool global_event_pool;
+static struct evdi_event_pool global_event_pool = {0};
 
 struct evdi_perf_counters evdi_perf;
 
 int evdi_event_system_init(void)
 {
-	global_event_pool.cache = kmem_cache_create("evdi_event",
+	global_event_pool.cache = kmem_cache_create("evdi_events",
 						   sizeof(struct evdi_event),
 						   0, SLAB_HWCACHE_ALIGN,
 						   NULL);
 	if (!global_event_pool.cache)
 		return -ENOMEM;
 
+	global_event_pool.drm_cache = kmem_cache_create("evdi_drm_events",
+		sizeof(struct evdi_drm_update_ready_event),
+		0, SLAB_HWCACHE_ALIGN, NULL);
+	if (!global_event_pool.drm_cache)
+		goto err_drm_cache;
+
+	global_event_pool.inflight_cache = kmem_cache_create("evdi_inflight",
+		sizeof(struct evdi_inflight_req),
+		0, SLAB_HWCACHE_ALIGN, NULL);
+	if (!global_event_pool.inflight_cache)
+		goto err_inflight_cache;
+
 	atomic_set(&global_event_pool.allocated, 0);
+	atomic_set(&global_event_pool.drm_allocated, 0);
+	atomic_set(&global_event_pool.inflight_allocated, 0);
 	atomic_set(&global_event_pool.peak_usage, 0);
 
 	memset(&evdi_perf, 0, sizeof(evdi_perf));
 
 	evdi_info("Event system initialized with slab cache");
 
-	/* Pre-warm cache */
+	/* Pre-warm caches */
 	{
-		const int prealloc = 256;
+		const int prealloc = 128;
 		int i;
 		void *tmp;
 		for (i = 0; i < prealloc; i++) {
@@ -40,9 +54,28 @@ int evdi_event_system_init(void)
 				break;
 			kmem_cache_free(global_event_pool.cache, tmp);
 		}
+		for (i = 0; i < prealloc; i++) {
+			tmp = kmem_cache_alloc(global_event_pool.drm_cache, GFP_NOWAIT);
+			if (!tmp)
+				break;
+			kmem_cache_free(global_event_pool.drm_cache, tmp);
+		}
+		
+		for (i = 0; i < prealloc; i++) {
+			tmp = kmem_cache_alloc(global_event_pool.inflight_cache, GFP_NOWAIT);
+			if (!tmp)
+				break;
+			kmem_cache_free(global_event_pool.inflight_cache, tmp);
+		}
 	}
 
 	return 0;
+
+err_inflight_cache:
+	kmem_cache_destroy(global_event_pool.drm_cache);
+err_drm_cache:
+	kmem_cache_destroy(global_event_pool.cache);
+	return -ENOMEM;
 }
 
 void evdi_event_system_cleanup(void)
@@ -51,9 +84,20 @@ void evdi_event_system_cleanup(void)
 		kmem_cache_destroy(global_event_pool.cache);
 		global_event_pool.cache = NULL;
 	}
+	if (global_event_pool.drm_cache) {
+		kmem_cache_destroy(global_event_pool.drm_cache);
+		global_event_pool.drm_cache = NULL;
+	}
+	if (global_event_pool.inflight_cache) {
+		kmem_cache_destroy(global_event_pool.inflight_cache);
+		global_event_pool.inflight_cache = NULL;
+	}
 
-	evdi_info("Event system cleaned up, peak usage: %d events",
-		 atomic_read(&global_event_pool.peak_usage));
+	evdi_info("Event system cleaned up - Peak: %d, DRM: %lld sent/%lld dropped, Inflight hits: %lld",
+		  atomic_read(&global_event_pool.peak_usage),
+		  atomic64_read(&evdi_perf.drm_events_sent),
+		  atomic64_read(&evdi_perf.drm_events_dropped),
+		  atomic64_read(&evdi_perf.inflight_cache_hits));
 }
 
 int evdi_event_init(struct evdi_device *evdi)
@@ -106,7 +150,7 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 				   struct drm_file *owner)
 {
 	struct evdi_event *event;
-	int cur_alloc, peak;
+	int cur_alloc, peak, new_peak;
 
 	event = kmem_cache_alloc(global_event_pool.cache, GFP_ATOMIC);
 	if (likely(event)) {
@@ -132,16 +176,62 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 	event->evdi = evdi;
 
 	cur_alloc = atomic_inc_return(&global_event_pool.allocated);
-	peak = atomic_read(&global_event_pool.peak_usage);
-
-	while (cur_alloc > peak) {
-		if (atomic_cmpxchg(&global_event_pool.peak_usage, peak, cur_alloc) == peak)
-			break;
-
+#ifdef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
+	do {
 		peak = atomic_read(&global_event_pool.peak_usage);
-	}
+		new_peak = max(cur_alloc, peak);
+	} while (peak != new_peak &&
+		 atomic_cmpxchg_relaxed(&global_event_pool.peak_usage, peak, new_peak) != peak);
+#else
+	peak = atomic_read(&global_event_pool.peak_usage);
+	if (cur_alloc > peak)
+		atomic_cmpxchg(&global_event_pool.peak_usage, peak, cur_alloc);
+#endif
 
 	return event;
+}
+
+struct evdi_drm_update_ready_event *evdi_drm_event_alloc(void)
+{
+	struct evdi_drm_update_ready_event *event;
+	int cur_alloc;
+
+	event = kmem_cache_alloc(global_event_pool.drm_cache, GFP_ATOMIC);
+	if (likely(event)) {
+		cur_alloc = atomic_inc_return(&global_event_pool.drm_allocated);
+		atomic_inc(&global_event_pool.allocated);
+	}
+	return event;
+}
+
+void evdi_drm_event_free(struct evdi_drm_update_ready_event *event)
+{
+	if (likely(event)) {
+		kmem_cache_free(global_event_pool.drm_cache, event);
+		atomic_dec(&global_event_pool.drm_allocated);
+		atomic_dec(&global_event_pool.allocated);
+	}
+}
+
+struct evdi_inflight_req *evdi_inflight_req_alloc(void)
+{
+	struct evdi_inflight_req *req;
+
+	req = kmem_cache_alloc(global_event_pool.inflight_cache, GFP_ATOMIC);
+	if (likely(req)) {
+		atomic_inc(&global_event_pool.inflight_allocated);
+		atomic64_inc(&evdi_perf.inflight_cache_hits);
+		memset(req, 0, sizeof(*req));
+	}
+	return req;
+}
+
+void evdi_inflight_req_free(struct evdi_inflight_req *req)
+{
+	if (likely(req)) {
+		kmem_cache_free(global_event_pool.inflight_cache, req);
+		atomic_dec(&global_event_pool.inflight_allocated);
+	}
 }
 
 void evdi_event_free(struct evdi_event *event)

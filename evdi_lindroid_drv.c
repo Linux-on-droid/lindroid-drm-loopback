@@ -86,6 +86,11 @@ static void evdi_driver_postclose(struct drm_device *dev, struct drm_file *file)
 {
 	struct evdi_device *evdi = dev->dev_private;
 
+	if (READ_ONCE(evdi->drm_client) == file) {
+		WRITE_ONCE(evdi->drm_client, NULL);
+		atomic_set(&evdi->update_requested, 0);
+	}
+
 	if (dev && dev->dev_private)
 		evdi_inflight_discard_owner(evdi, file);
 
@@ -97,6 +102,10 @@ static void evdi_driver_postclose(struct drm_device *dev, struct drm_file *file)
 int evdi_device_init(struct evdi_device *evdi, struct platform_device *pdev)
 {
 	int ret;
+#ifdef EVDI_HAVE_XARRAY
+	unsigned long index;
+	void *entry;
+#endif
 
 	evdi->pdev = pdev;
 	evdi->dev_index = atomic_inc_return(&evdi_device_count) - 1;
@@ -105,12 +114,28 @@ int evdi_device_init(struct evdi_device *evdi, struct platform_device *pdev)
 	evdi->width = 1920;
 	evdi->height = 1080;
 	evdi->refresh_rate = 60;
+	evdi->drm_client = NULL;
+	atomic_set(&evdi->update_requested, 0);
+
+#ifdef EVDI_HAVE_WQ_HIGHPRI
+	evdi->high_perf_wq = alloc_workqueue("evdi-hiperf%d",
+					     WQ_HIGHPRI | WQ_UNBOUND | WQ_MEM_RECLAIM,
+					     2, evdi->dev_index);
+#else
+	evdi->high_perf_wq = create_singlethread_workqueue("evdi-events");
+#endif
+	if (!evdi->high_perf_wq)
+		return -ENOMEM;
+		
+	INIT_WORK(&evdi->send_update_work, evdi_send_update_work_func);
+	INIT_WORK(&evdi->send_events_work, evdi_send_events_work_func);
 
 	mutex_init(&evdi->config_mutex);
 
 #ifdef EVDI_HAVE_XARRAY
 	xa_init(&evdi->file_xa);
 	xa_init(&evdi->inflight_xa);
+	evdi->inflight_next_id = 1;
 #else
 	idr_init(&evdi->file_idr);
 	spin_lock_init(&evdi->file_lock);
@@ -121,14 +146,21 @@ int evdi_device_init(struct evdi_device *evdi, struct platform_device *pdev)
 	ret = evdi_event_init(evdi);
 	if (ret) {
 		evdi_err("Failed to initialize event system: %d", ret);
-		goto err_event;
+		goto err_workqueue;
 	}
 
 	evdi_info("Device %d initialized", evdi->dev_index);
 	return 0;
 
-err_event:
+err_workqueue:
+	if (evdi->high_perf_wq) {
+		destroy_workqueue(evdi->high_perf_wq);
+		evdi->high_perf_wq = NULL;
+	}
 #ifdef EVDI_HAVE_XARRAY
+	xa_for_each(&evdi->inflight_xa, index, entry) {
+		xa_erase(&evdi->inflight_xa, index);
+	}
 	xa_destroy(&evdi->file_xa);
 	xa_destroy(&evdi->inflight_xa);
 #else
@@ -140,6 +172,16 @@ err_event:
 
 void evdi_device_cleanup(struct evdi_device *evdi)
 {
+	if (unlikely(!evdi))
+		return;
+
+	if (evdi->high_perf_wq) {
+		cancel_work_sync(&evdi->send_update_work);
+		cancel_work_sync(&evdi->send_events_work);
+		destroy_workqueue(evdi->high_perf_wq);
+		evdi->high_perf_wq = NULL;
+	}
+
 	evdi_info("Cleaning up device %d", evdi->dev_index);
 
 	evdi_event_cleanup(evdi);

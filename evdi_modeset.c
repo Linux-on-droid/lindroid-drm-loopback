@@ -37,9 +37,14 @@ static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 {
 	struct drm_plane_state *state = pipe->plane.state;
 	struct evdi_device *evdi = pipe->plane.dev->dev_private;
+	struct drm_framebuffer *old_fb = old_state ? old_state->fb : NULL;
+	struct drm_framebuffer *new_fb = state ? state->fb : NULL;
 
-	if (state->fb && (!old_state->fb || old_state->fb != state->fb)) {
+	if (new_fb && new_fb != old_fb) {
 		evdi_queue_swap_event(evdi, 0, NULL);
+		if (atomic_xchg(&evdi->update_requested, 0)) {
+			evdi_send_drm_update_ready_async(evdi);
+		}
 	}
 }
 

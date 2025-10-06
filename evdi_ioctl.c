@@ -15,7 +15,69 @@
 
 static int evdi_queue_create_event_with_id(struct evdi_device *evdi, struct drm_evdi_gbm_create_buff *params, struct drm_file *owner, int poll_id);
 int evdi_queue_destroy_event(struct evdi_device *evdi, int id, struct drm_file *owner);
-static struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *evdi,
+
+void evdi_send_update_work_func(struct work_struct *work)
+{
+	struct evdi_device *evdi = container_of(work, struct evdi_device, send_update_work);
+	struct evdi_drm_update_ready_event *event;
+	struct drm_file *client;
+	unsigned long flags;
+	bool sent = false;
+
+	client = READ_ONCE(evdi->drm_client);
+	if (unlikely(!client || !evdi->ddev))
+		return;
+
+	event = evdi_drm_event_alloc();
+	if (unlikely(!event)) {
+		atomic64_inc(&evdi_perf.drm_events_dropped);
+		return;
+	}
+
+	event->event.base.type = DRM_EVDI_EVENT_UPDATE_READY;
+	event->event.base.length = sizeof(event->event);
+	event->base.event = &event->event.base;
+	event->base.file_priv = client;
+
+	spin_lock_irqsave(&evdi->ddev->event_lock, flags);
+#ifdef EVDI_HAVE_DRM_EVENT_RESERVE
+	if (likely(drm_event_reserve_init_locked(evdi->ddev, client,
+						 &event->base, &event->event.base) == 0)) {
+		drm_send_event_locked(evdi->ddev, &event->base);
+		sent = true;
+	}
+#else
+	if (likely(client->event_space >= sizeof(event->event))) {
+		client->event_space -= sizeof(event->event);
+		list_add_tail(&event->base.link, &client->event_list);
+		wake_up_interruptible(&client->event_wait);
+		sent = true;
+	}
+#endif
+	spin_unlock_irqrestore(&evdi->ddev->event_lock, flags);
+
+	if (likely(sent)) {
+		atomic64_inc(&evdi_perf.drm_events_sent);
+	} else {
+		evdi_drm_event_free(event);
+		atomic64_inc(&evdi_perf.drm_events_dropped);
+	}
+}
+
+void evdi_send_events_work_func(struct work_struct *work)
+{
+	struct evdi_device *evdi = container_of(work, struct evdi_device, send_events_work);
+	wake_up_interruptible(&evdi->events.wait_queue);
+}
+
+void evdi_send_drm_update_ready_async(struct evdi_device *evdi)
+{
+	if (likely(READ_ONCE(evdi->drm_client) && evdi->high_perf_wq)) {
+		queue_work(evdi->high_perf_wq, &evdi->send_update_work);
+	}
+}
+
+static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *evdi,
 						     struct drm_file *owner,
 						     int type,
 						     int *out_id)
@@ -23,9 +85,12 @@ static struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *evdi,
 	struct evdi_inflight_req *req;
 	int id;
 
-	req = kzalloc(sizeof(*req), GFP_KERNEL);
-	if (!req)
-		return NULL;
+	req = evdi_inflight_req_alloc();
+	if (unlikely(!req)) {
+		req = kzalloc(sizeof(*req), GFP_KERNEL);
+		if (!req)
+			return NULL;
+	}
 
 	req->type = type;
 	req->owner = owner;
@@ -33,21 +98,44 @@ static struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *evdi,
 
 #ifdef EVDI_HAVE_XARRAY
 	{
-		u32 xid = 0;
-		int ret = xa_alloc(&evdi->inflight_xa, &xid, req,
-				   XA_LIMIT(1, INT_MAX), GFP_KERNEL);
+		u32 xid;
+		int ret;
+#ifdef EVDI_HAVE_XA_ALLOC_CYCLIC
+		xid = evdi->inflight_next_id ?: 1;
+		ret = xa_alloc_cyclic(&evdi->inflight_xa, &xid, req,
+				      XA_LIMIT(1, INT_MAX), &evdi->inflight_next_id,
+				      GFP_ATOMIC);
+		if (ret == -EBUSY) {
+			evdi->inflight_next_id = 1;
+			ret = xa_alloc(&evdi->inflight_xa, &xid, req, XA_LIMIT(1, INT_MAX),
+					GFP_ATOMIC);
+		}
 		if (ret) {
-			kfree(req);
+			evdi_inflight_req_free(req);
 			return NULL;
 		}
 		id = (int)xid;
+#else
+		xid = 0;
+		u32 start_id = evdi->inflight_next_id ?: 1;
+		ret = xa_alloc(&evdi->inflight_xa, &xid, req,
+			       XA_LIMIT(start_id, INT_MAX), GFP_ATOMIC);
+		if (ret == -EBUSY && start_id > 1) {
+			ret = xa_alloc(&evdi->inflight_xa, &xid, req, XA_LIMIT(1, INT_MAX), GFP_ATOMIC);
+		}
+		if (ret) {
+			evdi_inflight_req_free(req);
+			return NULL;
+		}
+		id = (int)xid;
+#endif
 	}
 #else
 	spin_lock(&evdi->inflight_lock);
-	id = idr_alloc(&evdi->inflight_idr, req, 1, 0, GFP_KERNEL);
+	id = idr_alloc(&evdi->inflight_idr, req, 1, 0, GFP_ATOMIC);
 	spin_unlock(&evdi->inflight_lock);
 	if (id < 0) {
-		kfree(req);
+		evdi_inflight_req_free(req);
 		return NULL;
 	}
 #endif
@@ -59,12 +147,23 @@ static struct evdi_inflight_req *evdi_inflight_take(struct evdi_device *evdi, in
 {
 	struct evdi_inflight_req *req = NULL;
 #ifdef EVDI_HAVE_XARRAY
-	xa_lock(&evdi->inflight_xa);
+#ifdef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
 	req = xa_load(&evdi->inflight_xa, id);
-	if (req)
-		xa_erase(&evdi->inflight_xa, id);
+	if (req) {
+		if (xa_cmpxchg(&evdi->inflight_xa, id, req, NULL, GFP_ATOMIC) != req)
+			req = NULL;
+	}
+#else
+	{
+		unsigned long flags;
+		xa_lock_irqsave(&evdi->inflight_xa, flags);
+		req = xa_load(&evdi->inflight_xa, id);
+		if (req)
+			xa_erase(&evdi->inflight_xa, id);
 
-	xa_unlock(&evdi->inflight_xa);
+		xa_unlock_irqrestore(&evdi->inflight_xa, flags);
+	}
+#endif
 #else
 	spin_lock(&evdi->inflight_lock);
 	req = idr_find(&evdi->inflight_idr, id);
@@ -91,10 +190,17 @@ void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owne
 	}
 #else
 	int max = INT_MAX;
-	int id;
-	for (id = 1; id < max; id++) {
+	int id = 1;
+	struct evdi_inflight_req *req;
+
+	while (id < max) {
+		bool found = false;
 		struct evdi_inflight_req *req;
 		spin_lock(&evdi->inflight_lock);
+		id = idr_get_next(&evdi->inflight_idr, &id);
+		if (id < 0 || id >= max)
+			break;
+
 		req = idr_find(&evdi->inflight_idr, id);
 		if (req && req->owner == owner) {
 			idr_remove(&evdi->inflight_idr, id);
@@ -104,6 +210,7 @@ void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owne
 			continue;
 		}
 		spin_unlock(&evdi->inflight_lock);
+		id++;
 	}
 #endif
 }
@@ -196,11 +303,25 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 	evdi_info("Device %d connected: %ux%u@%uHz",
 		 evdi->dev_index, cmd->width, cmd->height, cmd->refresh_rate);
 
+	WRITE_ONCE(evdi->drm_client, file);
+	atomic_set(&evdi->update_requested, 0);
+
 #ifdef EVDI_HAVE_KMS_HELPER
-		drm_kms_helper_hotplug_event(dev);
+	drm_kms_helper_hotplug_event(dev);
 #else
-		drm_helper_hpd_irq_event(dev);
+	drm_helper_hpd_irq_event(dev);
 #endif
+	return 0;
+}
+
+int evdi_ioctl_request_update(struct drm_device *dev, void *data, struct drm_file *file)
+{
+	struct evdi_device *evdi = dev->dev_private;
+
+	if (unlikely(!evdi_likely_connected(evdi)))
+		return -ENODEV;
+
+	atomic_set(&evdi->update_requested, 1);
 	return 0;
 }
 
@@ -425,10 +546,12 @@ int evdi_ioctl_add_buff_callback(struct drm_device *dev, void *data, struct drm_
 	struct evdi_inflight_req *req;
 
 	atomic64_inc(&evdi_perf.ioctl_calls[2]);
+	atomic64_inc(&evdi_perf.callback_completions);
 
 	req = evdi_inflight_take(evdi, cb->poll_id);
 	if (likely(req)) {
 		complete_all(&req->done);
+		evdi_inflight_req_free(req);
 	}
 
 	wake_up_interruptible(&evdi->events.wait_queue);
@@ -484,10 +607,12 @@ int evdi_ioctl_destroy_buff_callback(struct drm_device *dev, void *data, struct 
 	struct evdi_inflight_req *req;
 
 	atomic64_inc(&evdi_perf.ioctl_calls[4]);
+	atomic64_inc(&evdi_perf.callback_completions);
 
 	req = evdi_inflight_take(evdi, cb->poll_id);
 	if (likely(req)) {
 		complete_all(&req->done);
+		evdi_inflight_req_free(req);
 	}
 
 	wake_up_interruptible(&evdi->events.wait_queue);
@@ -502,10 +627,12 @@ int evdi_ioctl_swap_callback(struct drm_device *dev, void *data, struct drm_file
 	struct evdi_inflight_req *req;
 
 	atomic64_inc(&evdi_perf.ioctl_calls[5]);
+	atomic64_inc(&evdi_perf.callback_completions);
 
 	req = evdi_inflight_take(evdi, cb->poll_id);
 	if (likely(req)) {
 		complete_all(&req->done);
+		evdi_inflight_req_free(req);
 	}
 
 	wake_up_interruptible(&evdi->events.wait_queue);
@@ -545,24 +672,21 @@ int evdi_ioctl_gbm_del_buff(struct drm_device *dev, void *data, struct drm_file 
 
 	ret = evdi_queue_destroy_event(evdi, cmd->id, file);
 	if (ret) {
-		kfree(req);
+		evdi_inflight_req_free(req);
 		return ret;
 	}
 
 	ret = wait_for_completion_interruptible_timeout(&req->done, EVDI_WAIT_TIMEOUT);
-	if (ret <= 0) {
-		kfree(req);
-		return ret == 0 ? -ETIMEDOUT : (int)ret;
-	}
-
-	kfree(req);
-	return 0;
+	evdi_inflight_req_free(req);
+	return (ret <= 0) ? (ret == 0 ? -ETIMEDOUT : (int)ret) : 0;
 }
 
 const struct drm_ioctl_desc evdi_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(EVDI_CONNECT, evdi_ioctl_connect,
 			 DRM_UNLOCKED),
 	DRM_IOCTL_DEF_DRV(EVDI_POLL, evdi_ioctl_poll,
+			 DRM_UNLOCKED),
+	DRM_IOCTL_DEF_DRV(EVDI_REQUEST_UPDATE, evdi_ioctl_request_update,
 			 DRM_UNLOCKED),
 	DRM_IOCTL_DEF_DRV(EVDI_GBM_CREATE_BUFF, evdi_ioctl_gbm_create_buff,
 			 DRM_UNLOCKED),

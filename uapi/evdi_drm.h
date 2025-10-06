@@ -23,6 +23,14 @@ enum poll_event_type {
 	create_buf = 5
 };
 
+struct drm_evdi_event_update_ready {
+	struct drm_event base;
+};
+
+struct drm_evdi_request_update {
+	int32_t reserved;
+};
+
 struct drm_evdi_connect {
 	int32_t connected;
 	int32_t dev_index;
@@ -82,6 +90,7 @@ struct drm_evdi_gbm_del_buff {
 	int id;
 };
 
+#define DRM_EVDI_EVENT_UPDATE_READY  0x80000000
 #define DRM_EVDI_CONNECT                    0x00
 #define DRM_EVDI_REQUEST_UPDATE             0x01  /* Unused by create-disp */
 #define DRM_EVDI_GRABPIX                    0x02  /* Unused by create-disp */
@@ -102,6 +111,9 @@ struct drm_evdi_gbm_del_buff {
 
 #define DRM_IOCTL_EVDI_POLL DRM_IOWR(DRM_COMMAND_BASE + \
 	DRM_EVDI_POLL, struct drm_evdi_poll)
+
+#define DRM_IOCTL_EVDI_REQUEST_UPDATE DRM_IOWR(DRM_COMMAND_BASE + \
+	DRM_EVDI_REQUEST_UPDATE, struct drm_evdi_request_update)
 
 #define DRM_IOCTL_EVDI_ADD_BUFF_CALLBACK DRM_IOWR(DRM_COMMAND_BASE + \
 	DRM_EVDI_ADD_BUFF_CALLBACK, struct drm_evdi_add_buff_callabck)
