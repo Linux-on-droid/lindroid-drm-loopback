@@ -365,19 +365,15 @@ ssize_t evdi_event_read(struct file *file, char __user *buf, size_t len, loff_t 
 	struct drm_file *drmfile = file->private_data;
 	struct drm_device *ddev = drmfile->minor->dev;
 	struct evdi_device *evdi = ddev->dev_private;
-	struct evdi_event *evt;
+	struct evdi_event *evt = evdi_event_dequeue(evdi);
 	size_t copy;
 
-	if (!READ_ONCE(evdi->events.head)) {
+	if (!evt) {
 		if (file->f_flags & O_NONBLOCK)
 			return -EAGAIN;
 		evt = evdi_event_wait_dequeue(evdi, drmfile);
 		if (!evt)
 			return -ERESTARTSYS;
-	} else {
-		evt = evdi_event_dequeue(evdi);
-		if (!evt)
-			return -EAGAIN;
 	}
 
 	copy = evt->data_size < len ? evt->data_size : len;
