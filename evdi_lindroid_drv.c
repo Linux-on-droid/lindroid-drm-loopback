@@ -188,8 +188,10 @@ void evdi_device_cleanup(struct evdi_device *evdi)
 
 #ifdef EVDI_HAVE_XARRAY
 	xa_destroy(&evdi->file_xa);
+	xa_destroy(&evdi->inflight_xa);
 #else
 	idr_destroy(&evdi->file_idr);
+	idr_destroy(&evdi->inflight_idr);
 #endif
 
 	evdi_info("Device %d cleaned up", evdi->dev_index);
