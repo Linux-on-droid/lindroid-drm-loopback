@@ -149,7 +149,7 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 
 	req = evdi_inflight_req_alloc();
 	if (unlikely(!req))
-		req = kzalloc(sizeof(*req), GFP_ATOMIC);
+		return NULL;
 
 	req->type = type;
 	req->owner = owner;
@@ -174,9 +174,10 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 				       GFP_ATOMIC);
 		}
 		if (ret) {
-			evdi_inflight_req_free(req);
+			evdi_inflight_req_put(req);
 			return NULL;
 		}
+		evdi_inflight_req_get(req);
 		id = (int)xid;
 #else
 		xid = 0;
@@ -190,9 +191,10 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 				       XA_LIMIT(1, EVDI_MAX_INFLIGHT_REQUESTS), GFP_ATOMIC);
 		}
 		if (ret) {
-			evdi_inflight_req_free(req);
+			evdi_inflight_req_put(req);
 			return NULL;
 		}
+		evdi_inflight_req_get(req);
 		id = (int)xid;
 #endif
 	}
@@ -201,9 +203,10 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 	id = idr_alloc(&evdi->inflight_idr, req, 1, EVDI_MAX_INFLIGHT_REQUESTS, GFP_ATOMIC);
 	spin_unlock(&evdi->inflight_lock);
 	if (id < 0) {
-		evdi_inflight_req_free(req);
+		evdi_inflight_req_put(req);
 		return NULL;
 	}
+	evdi_inflight_req_get(req);
 #endif
 	*out_id = id;
 	return req;
@@ -260,6 +263,7 @@ void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owne
 #ifdef EVDI_HAVE_XARRAY
 #ifdef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
 	for (;;) {
+		taken = NULL;
 		rcu_read_lock();
 		xa_for_each(&evdi->inflight_xa, index, entry) {
 			req = entry;
@@ -277,10 +281,13 @@ void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owne
 			break;
 
 		complete_all(&taken->done);
+		evdi_inflight_req_put(taken);
 		cond_resched();
 	}
 #else /* !EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED */
 	for (;;) {
+		found = false;
+		taken = NULL;
 		xa_lock_irqsave(&evdi->inflight_xa, flags);
 		xa_for_each(&evdi->inflight_xa, index, entry) {
 			req = entry;
@@ -296,11 +303,13 @@ void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owne
 			break;
 
 		complete_all(&taken->done);
+		evdi_inflight_req_put(taken);
 		cond_resched();
 	}
 #endif /* EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED */
 #else /* !EVDI_HAVE_XARRAY */
 	for (;;) {
+		taken = NULL;
 		spin_lock(&evdi->inflight_lock);
 		for (;;) {
 			req = idr_get_next(&evdi->inflight_idr, &id);
@@ -320,6 +329,7 @@ void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owne
 			break;
 
 		complete_all(&taken->done);
+		evdi_inflight_req_put(taken);
 		cond_resched();
 	}
 #endif /* EVDI_HAVE_XARRAY */
@@ -387,6 +397,7 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 	if (!cmd->connected) {
 		evdi->connected = false;
 		atomic_set(&evdi->events.stopping, 1);
+		WRITE_ONCE(evdi->drm_client, NULL);
 
 		wake_up_interruptible(&evdi->events.wait_queue);
 
@@ -508,22 +519,27 @@ int evdi_ioctl_gbm_get_buff(struct drm_device *dev, void *data, struct drm_file 
 	if (evdi_queue_get_buf_event_with_id(evdi, &evt_params, file, poll_id)) {
 		struct evdi_inflight_req *tmp = evdi_inflight_take(evdi, poll_id);
 		if (tmp)
-			evdi_inflight_req_free(tmp);
+			evdi_inflight_req_put(tmp);
 
+		evdi_inflight_req_put(req);
 		return -ENOMEM;
 	}
 
 	ret = wait_for_completion_interruptible_timeout(&req->done, EVDI_WAIT_TIMEOUT);
 	if (ret == 0) {
-			evdi_inflight_req_free(req);
+			evdi_inflight_req_put(req);
 			return -ETIMEDOUT;
 	}
 	if (ret < 0) {
-			evdi_inflight_req_free(req);
+			evdi_inflight_req_put(req);
 			return (int)ret;
 	}
 
 	gralloc_buf = kzalloc(sizeof(struct evdi_gralloc_buf_user), GFP_KERNEL);
+	if (unlikely(!gralloc_buf)) {
+		evdi_inflight_req_put(req);
+		return -ENOMEM;
+	}
 
 	gralloc_buf->version = req->reply.get_buf.gralloc_buf.version;
 	gralloc_buf->numFds = req->reply.get_buf.gralloc_buf.numFds;
@@ -556,6 +572,7 @@ int evdi_ioctl_gbm_get_buff(struct drm_device *dev, void *data, struct drm_file 
 	for (i = 0; i < gralloc_buf->numFds; i++)
 		fd_install(installed_fds[i], req->reply.get_buf.gralloc_buf.data_files[i]);
 
+	ret = 0;
 err_event:
 	for (i = 0; i < gralloc_buf->numFds; i++) {
 		if (req->reply.get_buf.gralloc_buf.data_files[i]) {
@@ -564,7 +581,7 @@ err_event:
 		}
 	}
 	kfree(gralloc_buf);
-	evdi_inflight_req_free(req);
+	evdi_inflight_req_put(req);
 	return ret;
 }
 
@@ -602,35 +619,37 @@ int evdi_ioctl_gbm_create_buff(struct drm_device *dev, void *data, struct drm_fi
 	if (evdi_queue_create_event_with_id(evdi, &evt_params, file, poll_id)) {
 		tmp = evdi_inflight_take(evdi, poll_id);
 		if (tmp)
-			evdi_inflight_req_free(tmp);
+			evdi_inflight_req_put(tmp);
+
+		evdi_inflight_req_put(req);
 
 		return -ENOMEM;
 	}
 
 	wret = wait_for_completion_interruptible_timeout(&req->done, EVDI_WAIT_TIMEOUT);
 	if (wret == 0) {
-		evdi_inflight_req_free(req);
+		evdi_inflight_req_put(req);
 		return -ETIMEDOUT;
 	}
 	if (wret < 0) {
-		evdi_inflight_req_free(req);
+		evdi_inflight_req_put(req);
 		return (int)wret;
 	}
 
 	if (u_id) {
 		if (evdi_copy_to_user_allow_partial(u_id, &req->reply.create.id, sizeof(*u_id))) {
-			evdi_inflight_req_free(req);
+			evdi_inflight_req_put(req);
 			return -EFAULT;
 		}
 	}
 	if (u_stride) {
 		if (evdi_copy_to_user_allow_partial(u_stride, &req->reply.create.stride, sizeof(*u_stride))) {
-			evdi_inflight_req_free(req);
+			evdi_inflight_req_put(req);
 			return -EFAULT;
 		}
 	}
 
-	evdi_inflight_req_free(req);
+	evdi_inflight_req_put(req);
 	return 0;
 }
 
@@ -647,7 +666,7 @@ int evdi_ioctl_add_buff_callback(struct drm_device *dev, void *data, struct drm_
 
 	if (req) {
 		complete_all(&req->done);
-		evdi_inflight_req_free(req);
+		evdi_inflight_req_put(req);
 	} else {
 		evdi_warn("add_buff_callback: poll_id %d not found", cb->poll_id);
 	}
@@ -674,7 +693,7 @@ int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_
 			req->reply.get_buf.gralloc_buf.numFds = 0;
 			req->reply.get_buf.gralloc_buf.numInts = 0;
 			complete_all(&req->done);
-			evdi_inflight_req_free(req);
+			evdi_inflight_req_put(req);
 			wake_up_interruptible(&evdi->events.wait_queue);
 			return 0;
 		}
@@ -690,7 +709,7 @@ int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_
 				req->reply.get_buf.gralloc_buf.numFds = 0;
 				req->reply.get_buf.gralloc_buf.numInts = 0;
 				complete_all(&req->done);
-				evdi_inflight_req_free(req);
+				evdi_inflight_req_put(req);
 				wake_up_interruptible(&evdi->events.wait_queue);
 				return 0;
 			}
@@ -701,7 +720,7 @@ int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_
 					   sizeof(int) * cb->numFds)) {
 				req->reply.get_buf.gralloc_buf.numFds = 0;
 				complete_all(&req->done);
-				evdi_inflight_req_free(req);
+				evdi_inflight_req_put(req);
 				wake_up_interruptible(&evdi->events.wait_queue);
 				return 0;
 			}
@@ -719,7 +738,7 @@ int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_
 						 fds_local[i]);
 					req->reply.get_buf.gralloc_buf.numFds = 0;
 					complete_all(&req->done);
-					evdi_inflight_req_free(req);
+					evdi_inflight_req_put(req);
 					wake_up_interruptible(&evdi->events.wait_queue);
 					return 0;
 				}
@@ -727,7 +746,7 @@ int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_
 		}
 
 		complete_all(&req->done);
-		evdi_inflight_req_free(req);
+		evdi_inflight_req_put(req);
 	}
 
 	wake_up_interruptible(&evdi->events.wait_queue);
@@ -746,7 +765,7 @@ int evdi_ioctl_destroy_buff_callback(struct drm_device *dev, void *data, struct 
 	req = evdi_inflight_take(evdi, cb->poll_id);
 	if (likely(req)) {
 		complete_all(&req->done);
-		evdi_inflight_req_free(req);
+		evdi_inflight_req_put(req);
 	} else {
 		evdi_warn("destroy_buff_callback: poll_id %d not found", cb->poll_id);
 	}
@@ -768,7 +787,7 @@ int evdi_ioctl_swap_callback(struct drm_device *dev, void *data, struct drm_file
 	req = evdi_inflight_take(evdi, cb->poll_id);
 	if (likely(req)) {
 		complete_all(&req->done);
-		evdi_inflight_req_free(req);
+		evdi_inflight_req_put(req);
 	} else {
 		evdi_warn("swap_callback: poll_id %d not found", cb->poll_id);
 	}
@@ -796,7 +815,7 @@ int evdi_ioctl_create_buff_callback(struct drm_device *dev, void *data, struct d
 			req->reply.create.stride = cb->stride;
 		}
 		complete_all(&req->done);
-		evdi_inflight_req_free(req);
+		evdi_inflight_req_put(req);
 	} else {
 		evdi_warn("create_buff_callback: poll_id %d not found", cb->poll_id);
 	}
@@ -818,12 +837,12 @@ int evdi_ioctl_gbm_del_buff(struct drm_device *dev, void *data, struct drm_file 
 
 	ret = evdi_queue_destroy_event(evdi, cmd->id, file);
 	if (ret) {
-		evdi_inflight_req_free(req);
+		evdi_inflight_req_put(req);
 		return ret;
 	}
 
 	ret = wait_for_completion_interruptible_timeout(&req->done, EVDI_WAIT_TIMEOUT);
-	evdi_inflight_req_free(req);
+	evdi_inflight_req_put(req);
 	return (ret <= 0) ? (ret == 0 ? -ETIMEDOUT : (int)ret) : 0;
 }
 

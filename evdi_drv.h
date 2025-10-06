@@ -16,6 +16,7 @@
 #include <linux/poll.h>
 #include <linux/workqueue.h>
 #include <linux/jiffies.h>
+#include <linux/kref.h>
 
 #if KERNEL_VERSION(5, 5, 0) <= LINUX_VERSION_CODE
 #include <drm/drm_drv.h>
@@ -138,6 +139,7 @@ struct evdi_inflight_req {
 	int type;
 	struct completion done;
 	struct drm_file *owner;
+	struct kref refcount;
 	union {
 		struct {
 			int id;
@@ -214,6 +216,9 @@ struct evdi_device {
 #endif
 };
 
+struct evdi_inflight_req;
+void evdi_inflight_req_get(struct evdi_inflight_req *req);
+void evdi_inflight_req_put(struct evdi_inflight_req *req);
 ssize_t evdi_event_read(struct file *file, char __user *buf, size_t len, loff_t *ppos);
 unsigned int evdi_event_poll(struct file *file, poll_table *wait);
 
@@ -271,7 +276,6 @@ struct evdi_drm_update_ready_event *evdi_drm_event_alloc(void);
 void evdi_drm_event_free(struct evdi_drm_update_ready_event *event);
 struct evdi_inflight_req;
 struct evdi_inflight_req *evdi_inflight_req_alloc(void);
-void evdi_inflight_req_free(struct evdi_inflight_req *req);
 
 /* evdi_gem.c */
 struct evdi_gem_object *evdi_gem_alloc_object(struct drm_device *dev, size_t size);

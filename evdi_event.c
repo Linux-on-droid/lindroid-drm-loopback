@@ -10,6 +10,7 @@
 #include <linux/uaccess.h>
 
 static struct evdi_event_pool global_event_pool = {0};
+static void evdi_inflight_req_release(struct kref *kref);
 
 struct evdi_perf_counters evdi_perf;
 
@@ -215,6 +216,31 @@ void evdi_drm_event_free(struct evdi_drm_update_ready_event *event)
 	}
 }
 
+void evdi_inflight_req_get(struct evdi_inflight_req *req)
+{
+	if (unlikely(!req))
+		return;
+
+	kref_get(&req->refcount);
+}
+
+void evdi_inflight_req_put(struct evdi_inflight_req *req)
+{
+	if (unlikely(!req))
+		return;
+
+	kref_put(&req->refcount, evdi_inflight_req_release);
+}
+
+static void evdi_inflight_req_release(struct kref *kref)
+{
+	struct evdi_inflight_req *req =
+		container_of(kref, struct evdi_inflight_req, refcount);
+
+	kmem_cache_free(global_event_pool.inflight_cache, req);
+	atomic_dec(&global_event_pool.inflight_allocated);
+}
+
 struct evdi_inflight_req *evdi_inflight_req_alloc(void)
 {
 	struct evdi_inflight_req *req;
@@ -224,16 +250,9 @@ struct evdi_inflight_req *evdi_inflight_req_alloc(void)
 		atomic_inc(&global_event_pool.inflight_allocated);
 		atomic64_inc(&evdi_perf.inflight_cache_hits);
 		memset(req, 0, sizeof(*req));
+		kref_init(&req->refcount);
 	}
 	return req;
-}
-
-void evdi_inflight_req_free(struct evdi_inflight_req *req)
-{
-	if (likely(req)) {
-		kmem_cache_free(global_event_pool.inflight_cache, req);
-		atomic_dec(&global_event_pool.inflight_allocated);
-	}
 }
 
 void evdi_event_free(struct evdi_event *event)
