@@ -17,6 +17,7 @@
 #include <linux/workqueue.h>
 #include <linux/jiffies.h>
 #include <linux/kref.h>
+#include <linux/spinlock.h>
 
 #if KERNEL_VERSION(5, 5, 0) <= LINUX_VERSION_CODE
 #include <drm/drm_drv.h>
@@ -187,6 +188,8 @@ struct evdi_device {
 	struct work_struct send_events_work;
 
 	struct {
+	spinlock_t lock;
+	atomic_t cleanup_in_progress;
 	struct evdi_event * volatile head;
 	struct evdi_event * volatile tail;
 	wait_queue_head_t wait_queue;
