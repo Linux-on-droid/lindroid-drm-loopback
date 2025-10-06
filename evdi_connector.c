@@ -11,6 +11,9 @@ evdi_connector_detect(struct drm_connector *connector, bool force)
 {
 	struct evdi_device *evdi = connector->dev->dev_private;
 
+	if (unlikely(!evdi))
+		return connector_status_disconnected;
+
 	return evdi_likely_connected(evdi) ?
 	   connector_status_connected :
 	   connector_status_disconnected;
@@ -95,6 +98,9 @@ int evdi_connector_init(struct drm_device *dev, struct evdi_device *evdi)
 {
 	struct drm_connector *connector;
 	int ret;
+
+	if (unlikely(!dev || !evdi))
+		return -EINVAL;
 
 	connector = kzalloc(sizeof(*connector), GFP_KERNEL);
 	if (!connector)

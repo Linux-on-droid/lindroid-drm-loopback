@@ -123,6 +123,7 @@ struct evdi_event_pool {
 struct evdi_event {
 	enum poll_event_type type;
 	int poll_id;
+	struct rcu_head rcu;
 	void *data;
 	size_t data_size;
 	struct evdi_event *next;
@@ -188,19 +189,24 @@ struct evdi_device {
 	struct work_struct send_events_work;
 
 	struct {
-	spinlock_t lock;
-	atomic_t cleanup_in_progress;
-	struct evdi_event * volatile head;
-	struct evdi_event * volatile tail;
-	wait_queue_head_t wait_queue;
-	struct evdi_event_pool pool;
-	atomic_t queue_size;
-	atomic_t next_poll_id;
-	atomic_t stopping;
-	atomic64_t events_queued;
-	atomic64_t events_dequeued;
-	atomic64_t pool_hits;
-	atomic64_t pool_misses;
+		struct rcu_head rcu;
+		struct evdi_device *evdi;
+	} cleanup_rcu;
+
+	struct {
+		spinlock_t lock;
+		atomic_t cleanup_in_progress;
+		struct evdi_event * volatile head;
+		struct evdi_event * volatile tail;
+		wait_queue_head_t wait_queue;
+		struct evdi_event_pool pool;
+		atomic_t queue_size;
+		atomic_t next_poll_id;
+		atomic_t stopping;
+		atomic64_t events_queued;
+		atomic64_t events_dequeued;
+		atomic64_t pool_hits;
+		atomic64_t pool_misses;
 	} events;
 
 	struct mutex config_mutex;

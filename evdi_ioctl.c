@@ -80,11 +80,28 @@ static int evdi_copy_to_user_allow_partial(void __user *dst, const void *src, si
 
 void evdi_send_update_work_func(struct work_struct *work)
 {
-	struct evdi_device *evdi = container_of(work, struct evdi_device, send_update_work);
 	struct evdi_drm_update_ready_event *event;
+	struct evdi_device *evdi;
 	struct drm_file *client;
 	unsigned long flags;
 	bool sent = false;
+
+	if (unlikely(!work)) {
+		evdi_err("evdi: NULL work in work function");
+		return;
+	}
+	
+	evdi = container_of(work, struct evdi_device, send_update_work);
+
+	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress))) {
+		evdi_debug("Work function called during cleanup");
+		return;
+	}
+
+	evdi_smp_rmb();
+
+	if (unlikely(!evdi || !evdi->ddev))
+		return;
 
 	client = READ_ONCE(evdi->drm_client);
 	if (unlikely(!client || !evdi->ddev))
@@ -96,12 +113,23 @@ void evdi_send_update_work_func(struct work_struct *work)
 		return;
 	}
 
+	memset(event, 0, sizeof(*event));
 	event->event.base.type = DRM_EVDI_EVENT_UPDATE_READY;
 	event->event.base.length = sizeof(event->event);
 	event->base.event = &event->event.base;
-	event->base.file_priv = client;
 
 	spin_lock_irqsave(&evdi->ddev->event_lock, flags);
+
+	client = READ_ONCE(evdi->drm_client);
+	if (unlikely(!client)) {
+		spin_unlock_irqrestore(&evdi->ddev->event_lock, flags);
+		evdi_drm_event_free(event);
+		atomic64_inc(&evdi_perf.drm_events_dropped);
+		evdi_debug("DRM client disappeared during event send for device %d", evdi->dev_index);
+		return;
+	}
+	
+	event->base.file_priv = client;
 #ifdef EVDI_HAVE_DRM_EVENT_RESERVE
 	if (likely(drm_event_reserve_init_locked(evdi->ddev, client,
 						 &event->base, &event->event.base) == 0)) {
@@ -109,6 +137,13 @@ void evdi_send_update_work_func(struct work_struct *work)
 		sent = true;
 	}
 #else
+	if (unlikely(!client->event_space || client->event_space < sizeof(event->event))) {
+		spin_unlock_irqrestore(&evdi->ddev->event_lock, flags);
+		evdi_drm_event_free(event);
+		atomic64_inc(&evdi_perf.drm_events_dropped);
+		evdi_debug("Insufficient event space for client on device %d", evdi->dev_index);
+		return;
+	}
 	if (likely(client->event_space >= sizeof(event->event))) {
 		client->event_space -= sizeof(event->event);
 		list_add_tail(&event->base.link, &client->event_list);
@@ -128,14 +163,40 @@ void evdi_send_update_work_func(struct work_struct *work)
 
 void evdi_send_events_work_func(struct work_struct *work)
 {
-	struct evdi_device *evdi = container_of(work, struct evdi_device, send_events_work);
+	struct evdi_device *evdi;
+
+	if (unlikely(!work)) {
+		evdi_err("evdi: NULL work in send_events_work_func");
+		return;
+	}
+	evdi = container_of(work, struct evdi_device, send_events_work);
+	
+	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress))) {
+		return;
+	}
+
+	evdi_smp_rmb();
 	wake_up_interruptible(&evdi->events.wait_queue);
 }
 
 void evdi_send_drm_update_ready_async(struct evdi_device *evdi)
 {
+	if (unlikely(!evdi)) {
+		evdi_err("evdi_send_drm_update_ready_async: NULL evdi");
+		return;
+	}
+
+	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress) ||
+		     atomic_read(&evdi->events.stopping))) {
+		return;
+	}
 	if (likely(READ_ONCE(evdi->drm_client) && evdi->high_perf_wq)) {
-		queue_work(evdi->high_perf_wq, &evdi->send_update_work);
+		evdi_smp_rmb();
+		if (likely(evdi->ddev && !atomic_read(&evdi->events.stopping))) {
+			queue_work(evdi->high_perf_wq, &evdi->send_update_work);
+		} else {
+			evdi_info("Device %d not ready for async update", evdi->dev_index);
+		}
 	}
 }
 
@@ -215,6 +276,9 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 static struct evdi_inflight_req *evdi_inflight_take(struct evdi_device *evdi, int id)
 {
 	struct evdi_inflight_req *req = NULL;
+	if (unlikely(!evdi))
+		return NULL;
+
 #ifdef EVDI_HAVE_XARRAY
 #ifdef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
 	req = xa_load(&evdi->inflight_xa, id);
@@ -246,93 +310,73 @@ static struct evdi_inflight_req *evdi_inflight_take(struct evdi_device *evdi, in
 
 void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owner)
 {
-	struct evdi_inflight_req *taken = NULL;
 	struct evdi_inflight_req *req;
-#ifdef EVDI_HAVE_XARRAY
-	unsigned long index;
-	void *entry;
-#ifndef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
-	bool found = false;
-	unsigned long flags;
-#endif
-#else
-	int id = 0;
-	int victim = -1;
-#endif
+
+	if (unlikely(!evdi || !owner))
+		return;
 
 #ifdef EVDI_HAVE_XARRAY
-#ifdef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
-	for (;;) {
-		taken = NULL;
+	{
+		XA_STATE(xas, &evdi->inflight_xa, 0);
+
 		rcu_read_lock();
-		xa_for_each(&evdi->inflight_xa, index, entry) {
-			req = entry;
-			if (!req || req->owner != owner)
+		xas_for_each(&xas, req, ULONG_MAX) {
+			if (req->owner != owner)
 				continue;
 
-			if (xa_cmpxchg(&evdi->inflight_xa, index, req, NULL, GFP_ATOMIC) == req) {
-				taken = req;
-				break;
+#ifdef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
+			if (xa_cmpxchg(&evdi->inflight_xa,
+				       xas.xa_index, req, NULL, GFP_ATOMIC) != req)
+				continue;
+#else
+			if (xa_lock_irqsave(&evdi->inflight_xa, flags),
+			    xa_for_each(&evdi->inflight_xa, idx, entry),
+			    req == entry)
+			{
+				req = xa_erase(&evdi->inflight_xa, xas.xa_index);
+				xa_unlock_irqrestore(&evdi->inflight_xa, flags);
+			} else {
+				xa_unlock_irqrestore(&evdi->inflight_xa, flags);
+				continue;
 			}
+#endif
+			rcu_read_unlock();
+			complete_all(&req->done);
+			evdi_inflight_req_put(req);
+			cond_resched();
+			rcu_read_lock();
 		}
 		rcu_read_unlock();
-
-		if (!taken)
-			break;
-
-		complete_all(&taken->done);
-		evdi_inflight_req_put(taken);
-		cond_resched();
 	}
-#else /* !EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED */
-	for (;;) {
-		found = false;
-		taken = NULL;
-		xa_lock_irqsave(&evdi->inflight_xa, flags);
-		xa_for_each(&evdi->inflight_xa, index, entry) {
-			req = entry;
-			if (req && req->owner == owner) {
-				taken = xa_erase(&evdi->inflight_xa, index);
-				found = true;
-				break;
+#else
+	{
+		struct evdi_inflight_req *batch[16];
+		int nr, i, id;
+
+		do {
+			nr = 0;
+			id = 0;
+			spin_lock(&evdi->inflight_lock);
+			while (nr < 64) {
+				req = idr_get_next(&evdi->inflight_idr, &id);
+				if (!req)
+					break;
+				if (req->owner == owner) {
+					idr_remove(&evdi->inflight_idr, id);
+					batch[nr++] = req;
+				}
+				id++;
 			}
-		}
-		xa_unlock_irqrestore(&evdi->inflight_xa, flags);
+			spin_unlock(&evdi->inflight_lock);
 
-		if (!found || !taken)
-			break;
-
-		complete_all(&taken->done);
-		evdi_inflight_req_put(taken);
-		cond_resched();
-	}
-#endif /* EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED */
-#else /* !EVDI_HAVE_XARRAY */
-	for (;;) {
-		taken = NULL;
-		spin_lock(&evdi->inflight_lock);
-		for (;;) {
-			req = idr_get_next(&evdi->inflight_idr, &id);
-			if (!req)
-				break;
-
-			if (req->owner == owner) {
-				victim = id;
-				taken = idr_remove(&evdi->inflight_idr, victim);
-				break;
+			for (i = 0; i < nr; i++) {
+				complete_all(&batch[i]->done);
+				evdi_inflight_req_put(batch[i]);
+				cond_resched();
 			}
-			id++;
-		}
-		spin_unlock(&evdi->inflight_lock);
-
-		if (!taken)
-			break;
-
-		complete_all(&taken->done);
-		evdi_inflight_req_put(taken);
-		cond_resched();
+		} while (nr == 16);
 	}
-#endif /* EVDI_HAVE_XARRAY */
+#endif
 }
 
 static int evdi_queue_create_event_with_id(struct evdi_device *evdi,
@@ -418,21 +462,29 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 		return 0;
 	}
 
-	mutex_lock(&evdi->config_mutex);
 
+	if (evdi->high_perf_wq) {
+		cancel_work_sync(&evdi->send_update_work);
+		cancel_work_sync(&evdi->send_events_work);
+		flush_workqueue(evdi->high_perf_wq);
+	}
+
+	mutex_lock(&evdi->config_mutex);
 	evdi->connected = true;
 	evdi->width = cmd->width;
 	evdi->height = cmd->height;
 	evdi->refresh_rate = cmd->refresh_rate;
+	mutex_unlock(&evdi->config_mutex);
+
+	evdi_smp_wmb();
+	WRITE_ONCE(evdi->drm_client, file);
 
 	atomic_set(&evdi->events.stopping, 0);
-
-	mutex_unlock(&evdi->config_mutex);
+	evdi_smp_wmb();
 
 	evdi_info("Device %d connected: %ux%u@%uHz",
 		 evdi->dev_index, cmd->width, cmd->height, cmd->refresh_rate);
 
-	WRITE_ONCE(evdi->drm_client, file);
 	atomic_set(&evdi->update_requested, 0);
 
 #ifdef EVDI_HAVE_KMS_HELPER

@@ -122,6 +122,8 @@ int evdi_event_init(struct evdi_device *evdi)
 	atomic64_set(&evdi->events.pool_hits, 0);
 	atomic64_set(&evdi->events.pool_misses, 0);
 
+	evdi_smp_wmb();
+
 	evdi_debug("Event system initialized for device %d", evdi->dev_index);
 	return 0;
 }
@@ -130,10 +132,15 @@ void evdi_event_cleanup(struct evdi_device *evdi)
 {
 	struct evdi_event *event, *next;
 
+	if (unlikely(!evdi))
+		return;
+
 	atomic_set(&evdi->events.cleanup_in_progress, 1);
 	atomic_set(&evdi->events.stopping, 1);
 
-	wake_up_interruptible(&evdi->events.wait_queue);
+	evdi_smp_wmb();
+
+	wake_up_all(&evdi->events.wait_queue);
 
 	spin_lock(&evdi->events.lock);
 	event = READ_ONCE(evdi->events.head);
@@ -263,13 +270,10 @@ struct evdi_inflight_req *evdi_inflight_req_alloc(void)
 	return req;
 }
 
-void evdi_event_free(struct evdi_event *event)
+void evdi_event_free_immediate(struct evdi_event *event)
 {
 	if (!event)
 		return;
-
-	if (event->data && event->data_size > 0)
-		kfree(event->data);
 
 	if (event->from_pool && global_event_pool.cache) {
 		kmem_cache_free(global_event_pool.cache, event);
@@ -280,9 +284,30 @@ void evdi_event_free(struct evdi_event *event)
 	atomic_dec(&global_event_pool.allocated);
 }
 
+void evdi_event_free_rcu(struct rcu_head *head)
+{
+	struct evdi_event *event = container_of(head, struct evdi_event, rcu);
+	
+	if (event->data && event->data_size > 0)
+		kfree(event->data);
+
+	evdi_event_free_immediate(event);
+}
+
+void evdi_event_free(struct evdi_event *event)
+{
+	if (!event)
+		return;
+
+	call_rcu(&event->rcu, evdi_event_free_rcu);
+}
+
 void evdi_event_queue(struct evdi_device *evdi, struct evdi_event *event)
 {
 	struct evdi_event *tail;
+
+	if (unlikely(!evdi || !event))
+		return;
 
 	if (unlikely(atomic_read(&evdi->events.stopping))) {
 		evdi_event_free(event);
@@ -291,7 +316,13 @@ void evdi_event_queue(struct evdi_device *evdi, struct evdi_event *event)
 
 	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress))) {
 		spin_lock(&evdi->events.lock);
+		if (unlikely(atomic_read(&evdi->events.stopping))) {
+			spin_unlock(&evdi->events.lock);
+			evdi_event_free(event);
+			return;
+		}
 		WRITE_ONCE(event->next, NULL);
+		evdi_smp_wmb();
 		tail = READ_ONCE(evdi->events.tail);
 		if (tail) {
 			WRITE_ONCE(tail->next, event);
@@ -300,6 +331,8 @@ void evdi_event_queue(struct evdi_device *evdi, struct evdi_event *event)
 		}
 		WRITE_ONCE(evdi->events.tail, event);
 		spin_unlock(&evdi->events.lock);
+		atomic_inc(&evdi->events.queue_size);
+		wake_up_interruptible(&evdi->events.wait_queue);
 	} else {
 		do {
 			tail = READ_ONCE(evdi->events.tail);
@@ -315,13 +348,11 @@ void evdi_event_queue(struct evdi_device *evdi, struct evdi_event *event)
 			}
 			cpu_relax();
 		} while (1);
+		
+		atomic_inc(&evdi->events.queue_size);
+		wake_up_interruptible(&evdi->events.wait_queue);
 	}
-
-	atomic_inc(&evdi->events.queue_size);
-	atomic64_inc(&evdi->events.events_queued);
 	atomic64_inc(&evdi_perf.event_queue_ops);
-
-	wake_up_interruptible(&evdi->events.wait_queue);
 	atomic64_inc(&evdi_perf.wakeup_count);
 }
 
@@ -338,6 +369,7 @@ struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi)
 			WRITE_ONCE(evdi->events.head, next);
 			if (!next)
 				WRITE_ONCE(evdi->events.tail, NULL);
+
 			evt = head;
 			atomic_dec(&evdi->events.queue_size);
 			atomic64_inc(&evdi->events.events_dequeued);
@@ -366,7 +398,6 @@ struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi)
 		}
 		cpu_relax();
 	} while (1);
-
 	atomic_dec(&evdi->events.queue_size);
 	atomic64_inc(&evdi->events.events_dequeued);
 	atomic64_inc(&evdi_perf.event_dequeue_ops);
@@ -446,15 +477,18 @@ void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file)
 	int removed = 0;
 
 	atomic_set(&evdi->events.cleanup_in_progress, 1);
+	synchronize_rcu();
 	spin_lock(&evdi->events.lock);
 
 	event = READ_ONCE(evdi->events.head);
 	while (event) {
-		next = READ_ONCE(event->next);
-		WRITE_ONCE(event->next, NULL);
+		next = rcu_dereference_protected(event->next,
+			lockdep_is_held(&evdi->events.lock));
 		if (event->owner == file) {
 			removed++;
+			call_rcu(&event->rcu, evdi_event_free_rcu);
 		} else {
+			WRITE_ONCE(event->next, NULL);
 			if (!new_head) {
 				new_head = event;
 				new_tail = event;
@@ -465,16 +499,15 @@ void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file)
 		}
 		event = next;
 	}
-	WRITE_ONCE(evdi->events.head, new_head);
-	WRITE_ONCE(evdi->events.tail, new_tail);
+	rcu_assign_pointer(evdi->events.head, new_head);
+	rcu_assign_pointer(evdi->events.tail, new_tail);
 	if (removed)
 		atomic_sub(removed, &evdi->events.queue_size);
 
 	spin_unlock(&evdi->events.lock);
 
-	event = READ_ONCE(new_tail);
-	event = READ_ONCE(new_head);
 	wake_up_interruptible(&evdi->events.wait_queue);
+	atomic_set(&evdi->events.cleanup_in_progress, 0);
 	evdi_debug("Cleaned up events for closed file");
 }
 

@@ -279,6 +279,9 @@ static int evdi_pin_pages(struct evdi_gem_object *obj)
 {
 	int ret = 0;
 
+	if (unlikely(!obj))
+		return -EINVAL;
+
 	/* Fast path if pinned */
 	if (likely(atomic_read(&obj->pages_pin_count) > 0)) {
 		atomic_inc(&obj->pages_pin_count);
@@ -300,6 +303,9 @@ static int evdi_pin_pages(struct evdi_gem_object *obj)
 static void evdi_unpin_pages(struct evdi_gem_object *obj)
 {
 	int new_cnt = atomic_dec_return(&obj->pages_pin_count);
+
+	if (unlikely(!obj))
+		return;
 
 	if (unlikely(new_cnt == 0)) {
 		mutex_lock(&obj->pages_lock);
