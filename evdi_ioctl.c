@@ -93,18 +93,24 @@ void evdi_send_update_work_func(struct work_struct *work)
 	
 	evdi = container_of(work, struct evdi_device, send_update_work);
 
-	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress))) {
-		evdi_debug("Work function called during cleanup");
+	if (unlikely(!evdi))
 		return;
-	}
 
 	evdi_smp_rmb();
 
-	if (unlikely(!evdi || !evdi->ddev))
+	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress)))
+		return;
+
+	if (unlikely(!evdi->ddev))
 		return;
 
 	client = READ_ONCE(evdi->drm_client);
-	if (unlikely(!client || !evdi->ddev))
+	if (unlikely(!client))
+		return;
+
+	evdi_smp_rmb();
+	
+	if (unlikely(READ_ONCE(evdi->drm_client) != client))
 		return;
 
 	event = evdi_drm_event_alloc();
@@ -119,6 +125,8 @@ void evdi_send_update_work_func(struct work_struct *work)
 	event->base.event = &event->event.base;
 
 	spin_lock_irqsave(&evdi->ddev->event_lock, flags);
+
+	evdi_smp_rmb();
 
 	client = READ_ONCE(evdi->drm_client);
 	if (unlikely(!client)) {
@@ -169,6 +177,7 @@ void evdi_send_events_work_func(struct work_struct *work)
 		evdi_err("evdi: NULL work in send_events_work_func");
 		return;
 	}
+	evdi_smp_rmb();
 	evdi = container_of(work, struct evdi_device, send_events_work);
 	
 	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress))) {
@@ -227,12 +236,12 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 
 		ret = xa_alloc_cyclic(&evdi->inflight_xa, &xid, req,
 				      XA_LIMIT(1, INT_MAX), &evdi->inflight_next_id,
-				      GFP_ATOMIC);
+				      GFP_NOWAIT);
 		if (ret == -EBUSY) {
 			evdi->inflight_next_id = 1;
 			ret = xa_alloc(&evdi->inflight_xa, &xid, req,
 				       XA_LIMIT(1, EVDI_MAX_INFLIGHT_REQUESTS),
-				       GFP_ATOMIC);
+				       GFP_NOWAIT);
 		}
 		if (ret) {
 			evdi_inflight_req_put(req);
@@ -246,10 +255,10 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 		if (unlikely(!start_id))
 			start_id = 1;
 		ret = xa_alloc(&evdi->inflight_xa, &xid, req,
-			       XA_LIMIT(start_id, INT_MAX), GFP_ATOMIC);
+			       XA_LIMIT(start_id, INT_MAX), GFP_NOWAIT);
 		if (ret == -EBUSY && start_id > 1) {
 			ret = xa_alloc(&evdi->inflight_xa, &xid, req,
-				       XA_LIMIT(1, EVDI_MAX_INFLIGHT_REQUESTS), GFP_ATOMIC);
+				       XA_LIMIT(1, EVDI_MAX_INFLIGHT_REQUESTS), GFP_NOWAIT);
 		}
 		if (ret) {
 			evdi_inflight_req_put(req);
@@ -283,7 +292,7 @@ static struct evdi_inflight_req *evdi_inflight_take(struct evdi_device *evdi, in
 #ifdef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
 	req = xa_load(&evdi->inflight_xa, id);
 	if (req) {
-		if (xa_cmpxchg(&evdi->inflight_xa, id, req, NULL, GFP_ATOMIC) != req)
+		if (xa_cmpxchg(&evdi->inflight_xa, id, req, NULL, GFP_NOWAIT) != req)
 			req = NULL;
 	}
 #else
@@ -326,7 +335,7 @@ void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owne
 
 #ifdef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
 			if (xa_cmpxchg(&evdi->inflight_xa,
-				       xas.xa_index, req, NULL, GFP_ATOMIC) != req)
+				       xas.xa_index, req, NULL, GFP_NOWAIT) != req)
 				continue;
 #else
 			if (xa_lock_irqsave(&evdi->inflight_xa, flags),

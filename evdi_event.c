@@ -107,6 +107,7 @@ int evdi_event_init(struct evdi_device *evdi)
 		return -EINVAL;
 
 	spin_lock_init(&evdi->events.lock);
+	init_waitqueue_head(&evdi->events.wait_queue);
 	atomic_set(&evdi->events.cleanup_in_progress, 0);
 
 	evdi->events.head = NULL;
@@ -115,7 +116,7 @@ int evdi_event_init(struct evdi_device *evdi)
 	atomic_set(&evdi->events.next_poll_id, 1);
 	atomic_set(&evdi->events.stopping, 0);
 
-	init_waitqueue_head(&evdi->events.wait_queue);
+	init_llist_head(&evdi->events.lockfree_head);
 
 	atomic64_set(&evdi->events.events_queued, 0);
 	atomic64_set(&evdi->events.events_dequeued, 0);
@@ -302,6 +303,30 @@ void evdi_event_free(struct evdi_event *event)
 	call_rcu(&event->rcu, evdi_event_free_rcu);
 }
 
+static inline bool evdi_event_queue_lockfree(struct evdi_device *evdi, struct evdi_event *event)
+{
+	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress)))
+		return false;
+
+	evdi_smp_rmb();
+	
+	if (unlikely(atomic_read(&evdi->events.stopping)))
+		return false;
+
+	llist_add(&event->llist, &evdi->events.lockfree_head);
+	
+	atomic_inc(&evdi->events.queue_size);
+	atomic64_inc(&evdi->events.events_queued);
+	atomic64_inc(&evdi_perf.event_queue_ops);
+	
+	evdi_smp_mb();
+	
+	wake_up_interruptible(&evdi->events.wait_queue);
+	atomic64_inc(&evdi_perf.wakeup_count);
+	
+	return true;
+}
+
 void evdi_event_queue(struct evdi_device *evdi, struct evdi_event *event)
 {
 	struct evdi_event *tail;
@@ -309,49 +334,31 @@ void evdi_event_queue(struct evdi_device *evdi, struct evdi_event *event)
 	if (unlikely(!evdi || !event))
 		return;
 
+	if (likely(evdi_event_queue_lockfree(evdi, event)))
+		return;
+
+	spin_lock(&evdi->events.lock);
+
 	if (unlikely(atomic_read(&evdi->events.stopping))) {
+		spin_unlock(&evdi->events.lock);
 		evdi_event_free(event);
 		return;
 	}
-
-	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress))) {
-		spin_lock(&evdi->events.lock);
-		if (unlikely(atomic_read(&evdi->events.stopping))) {
-			spin_unlock(&evdi->events.lock);
-			evdi_event_free(event);
-			return;
-		}
-		WRITE_ONCE(event->next, NULL);
-		evdi_smp_wmb();
-		tail = READ_ONCE(evdi->events.tail);
-		if (tail) {
-			WRITE_ONCE(tail->next, event);
-		} else {
-			WRITE_ONCE(evdi->events.head, event);
-		}
-		WRITE_ONCE(evdi->events.tail, event);
-		spin_unlock(&evdi->events.lock);
-		atomic_inc(&evdi->events.queue_size);
-		wake_up_interruptible(&evdi->events.wait_queue);
+	WRITE_ONCE(event->next, NULL);
+	evdi_smp_wmb();
+	tail = READ_ONCE(evdi->events.tail);
+	if (tail) {
+		WRITE_ONCE(tail->next, event);
 	} else {
-		do {
-			tail = READ_ONCE(evdi->events.tail);
-			WRITE_ONCE(event->next, NULL);
-			evdi_smp_wmb();
-			if (likely(cmpxchg(&evdi->events.tail, tail, event) == tail)) {
-				if (tail) {
-					WRITE_ONCE(tail->next, event);
-				} else {
-					WRITE_ONCE(evdi->events.head, event);
-				}
-				break;
-			}
-			cpu_relax();
-		} while (1);
-		
-		atomic_inc(&evdi->events.queue_size);
-		wake_up_interruptible(&evdi->events.wait_queue);
+		WRITE_ONCE(evdi->events.head, event);
 	}
+
+	WRITE_ONCE(evdi->events.tail, event);
+	spin_unlock(&evdi->events.lock);
+
+	atomic_inc(&evdi->events.queue_size);
+	atomic64_inc(&evdi->events.events_queued);
+	wake_up_interruptible(&evdi->events.wait_queue);
 	atomic64_inc(&evdi_perf.event_queue_ops);
 	atomic64_inc(&evdi_perf.wakeup_count);
 }
@@ -359,51 +366,51 @@ void evdi_event_queue(struct evdi_device *evdi, struct evdi_event *event)
 struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi)
 {
 	struct evdi_event *head, *next;
+	struct llist_node *node;
+	struct evdi_event *event;
+		
 
-	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress))) {
-		struct evdi_event *evt = NULL;
-		spin_lock(&evdi->events.lock);
-		head = READ_ONCE(evdi->events.head);
-		if (head) {
-			next = READ_ONCE(head->next);
-			WRITE_ONCE(evdi->events.head, next);
-			if (!next)
-				WRITE_ONCE(evdi->events.tail, NULL);
+ 	if (unlikely(!evdi))
+ 		return NULL;
 
-			evt = head;
-			atomic_dec(&evdi->events.queue_size);
-			atomic64_inc(&evdi->events.events_dequeued);
-			atomic64_inc(&evdi_perf.event_dequeue_ops);
-		}
-		spin_unlock(&evdi->events.lock);
-		return evt;
-	}
+	if (likely(!atomic_read(&evdi->events.cleanup_in_progress)))
+		goto spinlock_path;
 
-	do {
-		head = READ_ONCE(evdi->events.head);
-		if (!head)
-			return NULL;
+	evdi_smp_rmb();
+	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress)))
+		goto spinlock_path;
 
-		next = READ_ONCE(head->next);
-		if (next)
-			prefetch(next);
+	node = llist_del_first(&evdi->events.lockfree_head);
+	if (!node)
+		return NULL;
 
-		evdi_smp_rmb();
 
-		if (likely(cmpxchg(&evdi->events.head, head, next) == head)) {
-			if (!next)
-				WRITE_ONCE(evdi->events.tail, NULL);
-
-			break;
-		}
-		cpu_relax();
-	} while (1);
+	event = llist_entry(node, struct evdi_event, llist);
 	atomic_dec(&evdi->events.queue_size);
 	atomic64_inc(&evdi->events.events_dequeued);
 	atomic64_inc(&evdi_perf.event_dequeue_ops);
+		
+	return event;
 
+spinlock_path:
+	spin_lock(&evdi->events.lock);
+	
+	head = READ_ONCE(evdi->events.head);
+	if (head) {
+		next = READ_ONCE(head->next);
+		WRITE_ONCE(evdi->events.head, next);
+		if (!next)
+			WRITE_ONCE(evdi->events.tail, NULL);
+		
+		atomic_dec(&evdi->events.queue_size);
+		atomic64_inc(&evdi->events.events_dequeued);
+		atomic64_inc(&evdi_perf.event_dequeue_ops);
+	}
+	
+	spin_unlock(&evdi->events.lock);
 	return head;
 }
+
 
 static struct evdi_event *evdi_event_wait_dequeue(struct evdi_device *evdi,
 						  struct drm_file *owner)
@@ -416,7 +423,7 @@ static struct evdi_event *evdi_event_wait_dequeue(struct evdi_device *evdi,
 		return evt;
 
 	ret = wait_event_interruptible_timeout(evdi->events.wait_queue,
-					       READ_ONCE(evdi->events.head) ||
+					       atomic_read(&evdi->events.queue_size) > 0 ||
 					       atomic_read(&evdi->events.stopping),
 					       msecs_to_jiffies(16));
 	if (ret < 0)
@@ -464,7 +471,7 @@ unsigned int evdi_event_poll(struct file *file, poll_table *wait)
 	unsigned int mask = 0;
 
 	poll_wait(file, &evdi->events.wait_queue, wait);
-	if (READ_ONCE(evdi->events.head))
+	if (atomic_read(&evdi->events.queue_size) > 0)
 		mask |= POLLIN | POLLRDNORM;
 
 	return mask;
@@ -474,18 +481,64 @@ void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file)
 {
 	struct evdi_event *event, *next;
 	struct evdi_event *new_head = NULL, *new_tail = NULL;
+	struct evdi_event **restore_events = NULL;
 	int removed = 0;
+	int lf_removed = 0;
+	int sp_removed = 0;
+	int restore_count = 0;
+	int restore_capacity = 0;
+	int i;
+
+	if (unlikely(!evdi || !file))
+		return;
 
 	atomic_set(&evdi->events.cleanup_in_progress, 1);
+
+	evdi_smp_mb();
 	synchronize_rcu();
+
+	{
+		struct llist_node *llnode, *next_node;
+		int queue_estimate = atomic_read(&evdi->events.queue_size);
+
+		if (queue_estimate > 0) {
+			restore_capacity = queue_estimate + 64;
+			restore_events = kmalloc_array(restore_capacity, 
+						sizeof(struct evdi_event *), GFP_KERNEL);
+		}
+
+		llnode = llist_del_all(&evdi->events.lockfree_head);
+
+		while (llnode) {
+			next_node = llnode->next;
+			event = llist_entry(llnode, struct evdi_event, llist);
+
+			if (event->owner == file) {
+				lf_removed++;
+				atomic_dec(&evdi->events.queue_size);
+				removed++;
+				call_rcu(&event->rcu, evdi_event_free_rcu);
+			} else {
+				if (restore_events && restore_count < restore_capacity)
+					restore_events[restore_count++] = event;
+			}
+		}
+		llnode = next_node;
+	}
+	if (restore_events) {
+		for (i = 0; i < restore_count; i++) {
+			llist_add(&restore_events[i]->llist, &evdi->events.lockfree_head);
+		}
+		kfree(restore_events);
+	}
+
 	spin_lock(&evdi->events.lock);
 
 	event = READ_ONCE(evdi->events.head);
 	while (event) {
-		next = rcu_dereference_protected(event->next,
-			lockdep_is_held(&evdi->events.lock));
+		next = READ_ONCE(event->next);
 		if (event->owner == file) {
-			removed++;
+			sp_removed++;
 			call_rcu(&event->rcu, evdi_event_free_rcu);
 		} else {
 			WRITE_ONCE(event->next, NULL);
@@ -499,16 +552,22 @@ void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file)
 		}
 		event = next;
 	}
-	rcu_assign_pointer(evdi->events.head, new_head);
-	rcu_assign_pointer(evdi->events.tail, new_tail);
-	if (removed)
-		atomic_sub(removed, &evdi->events.queue_size);
+	
+	WRITE_ONCE(evdi->events.head, new_head);
+	WRITE_ONCE(evdi->events.tail, new_tail);
+	if (sp_removed)
+		atomic_sub(sp_removed, &evdi->events.queue_size);
 
 	spin_unlock(&evdi->events.lock);
 
 	wake_up_interruptible(&evdi->events.wait_queue);
+	
 	atomic_set(&evdi->events.cleanup_in_progress, 0);
-	evdi_debug("Cleaned up events for closed file");
+	evdi_smp_mb();
+	
+	if (lf_removed || sp_removed)
+		evdi_debug("Cleaned up %d events for closed file (lf:%d sp:%d)",
+			   lf_removed + sp_removed, lf_removed, sp_removed);
 }
 
 int evdi_event_wait(struct evdi_device *evdi, struct drm_file *file)
@@ -520,7 +579,7 @@ int evdi_event_wait(struct evdi_device *evdi, struct drm_file *file)
 
 	for (;;) {
 		prepare_to_wait(&evdi->events.wait_queue, &wait, TASK_INTERRUPTIBLE);
-		if (evdi->events.head) {
+		if (atomic_read(&evdi->events.queue_size) > 0) {
 			ret = 0;
 			break;
 		}

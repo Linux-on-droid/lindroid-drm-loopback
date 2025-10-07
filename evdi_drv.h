@@ -18,6 +18,7 @@
 #include <linux/jiffies.h>
 #include <linux/kref.h>
 #include <linux/spinlock.h>
+#include <linux/llist.h>
 
 #if KERNEL_VERSION(5, 5, 0) <= LINUX_VERSION_CODE
 #include <drm/drm_drv.h>
@@ -129,6 +130,7 @@ struct evdi_event {
 	struct evdi_event *next;
 	bool from_pool;
 	struct drm_file *owner;
+	struct llist_node llist;
 	struct evdi_device *evdi;
 };
 
@@ -198,6 +200,7 @@ struct evdi_device {
 		atomic_t cleanup_in_progress;
 		struct evdi_event * volatile head;
 		struct evdi_event * volatile tail;
+		struct llist_head lockfree_head;
 		wait_queue_head_t wait_queue;
 		struct evdi_event_pool pool;
 		atomic_t queue_size;
@@ -325,6 +328,11 @@ static __always_inline void evdi_smp_wmb(void)
 static __always_inline void evdi_smp_rmb(void)
 {
 	smp_rmb();
+}
+
+static __always_inline void evdi_smp_mb(void)
+{
+	smp_mb();
 }
 
 /* Macros */

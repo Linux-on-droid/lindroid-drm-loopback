@@ -94,8 +94,9 @@ static void evdi_driver_postclose(struct drm_device *dev, struct drm_file *file)
 		atomic_set(&evdi->update_requested, 0);
 	}
 
-	if (dev && dev->dev_private)
-		evdi_inflight_discard_owner(evdi, file);
+	evdi_smp_wmb();
+	evdi_inflight_discard_owner(evdi, file);
+	evdi_smp_mb();
 
 	evdi_event_cleanup_file(evdi, file);
 
@@ -182,6 +183,8 @@ void evdi_device_cleanup(struct evdi_device *evdi)
 	atomic_set(&evdi->events.cleanup_in_progress, 1);
 	atomic_set(&evdi->events.stopping, 1);
 
+	WRITE_ONCE(evdi->drm_client, NULL);
+
 	evdi_smp_wmb();
 
 	if (evdi->high_perf_wq) {
@@ -195,7 +198,7 @@ void evdi_device_cleanup(struct evdi_device *evdi)
 	evdi_debug("Cleaning up device %d", evdi->dev_index);
 
 	evdi_event_cleanup(evdi);
-
+	evdi_smp_mb();
 #ifdef EVDI_HAVE_XARRAY
 	xa_destroy(&evdi->file_xa);
 	xa_destroy(&evdi->inflight_xa);
