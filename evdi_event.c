@@ -373,7 +373,7 @@ struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi)
  	if (unlikely(!evdi))
  		return NULL;
 
-	if (likely(!atomic_read(&evdi->events.cleanup_in_progress)))
+	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress)))
 		goto spinlock_path;
 
 	evdi_smp_rmb();
