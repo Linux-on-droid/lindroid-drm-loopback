@@ -233,8 +233,6 @@ struct evdi_device {
 struct evdi_inflight_req;
 void evdi_inflight_req_get(struct evdi_inflight_req *req);
 void evdi_inflight_req_put(struct evdi_inflight_req *req);
-ssize_t evdi_event_read(struct file *file, char __user *buf, size_t len, loff_t *ppos);
-unsigned int evdi_event_poll(struct file *file, poll_table *wait);
 
 extern struct evdi_event_pool *evdi_global_event_pool;
 extern atomic_t evdi_device_count;

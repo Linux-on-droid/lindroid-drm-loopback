@@ -24,8 +24,8 @@ static const struct file_operations evdi_fops = {
 	.unlocked_ioctl = drm_ioctl,
 	.mmap = evdi_drm_gem_mmap,
 	.llseek = noop_llseek,
-	.poll = evdi_event_poll,
-	.read = evdi_event_read,
+	.poll = drm_poll,
+	.read = drm_read,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl = drm_compat_ioctl,
 #endif
