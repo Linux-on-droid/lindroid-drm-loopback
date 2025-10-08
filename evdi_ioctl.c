@@ -531,7 +531,6 @@ int evdi_ioctl_poll(struct drm_device *dev, void *data, struct drm_file *file)
 		cmd->poll_id = event->poll_id;
 
 		if (event->data && cmd->data) {
-			prefetch(cmd->data);
 			if (evdi_copy_to_user_allow_partial(cmd->data, event->data, event->data_size)) {
 				evdi_event_free(event);
 				return -EFAULT;

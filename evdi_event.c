@@ -193,6 +193,7 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 	event->next = NULL;
 	event->owner = owner;
 	event->evdi = evdi;
+	atomic_set(&event->freed, 0);
 
 	cur_alloc = atomic_inc_return(&global_event_pool.allocated);
 #ifdef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
@@ -298,6 +299,9 @@ void evdi_event_free_rcu(struct rcu_head *head)
 void evdi_event_free(struct evdi_event *event)
 {
 	if (!event)
+		return;
+
+	if (atomic_xchg(&event->freed, 1))
 		return;
 
 	call_rcu(&event->rcu, evdi_event_free_rcu);

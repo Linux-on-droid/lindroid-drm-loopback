@@ -132,6 +132,7 @@ struct evdi_event {
 	struct drm_file *owner;
 	struct llist_node llist;
 	struct evdi_device *evdi;
+	atomic_t freed;
 };
 
 struct evdi_drm_update_ready_event {
