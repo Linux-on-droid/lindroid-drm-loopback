@@ -145,6 +145,7 @@ struct evdi_inflight_req {
 	struct completion done;
 	struct drm_file *owner;
 	struct kref refcount;
+	atomic_t freed;
 	union {
 		struct {
 			int id;

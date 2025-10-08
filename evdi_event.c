@@ -254,6 +254,9 @@ static void evdi_inflight_req_release(struct kref *kref)
 	struct evdi_inflight_req *req =
 		container_of(kref, struct evdi_inflight_req, refcount);
 
+	if (atomic_xchg(&req->freed, 1))
+		return;
+
 	kmem_cache_free(global_event_pool.inflight_cache, req);
 	atomic_dec(&global_event_pool.inflight_allocated);
 }
@@ -268,6 +271,7 @@ struct evdi_inflight_req *evdi_inflight_req_alloc(void)
 		atomic64_inc(&evdi_perf.inflight_cache_hits);
 		memset(req, 0, sizeof(*req));
 		kref_init(&req->refcount);
+		atomic_set(&req->freed, 0);
 	}
 	return req;
 }
