@@ -491,6 +491,13 @@ struct drm_gem_object *evdi_prime_import_sg_table(struct drm_device *dev,
 	if (IS_ERR(obj))
 		return ERR_CAST(obj);
 
+	obj->base.import_attach = attach;
 	obj->sg = sg;
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,10,0)
+	if (attach && attach->dmabuf)
+		obj->base.resv = attach->dmabuf->resv;
+#endif
+
 	return &obj->base;
 }
