@@ -263,6 +263,7 @@ int evdi_ioctl_request_update(struct drm_device *dev, void *data, struct drm_fil
 void evdi_send_drm_update_ready_async(struct evdi_device *evdi);
 void evdi_send_update_work_func(struct work_struct *work);
 void evdi_send_events_work_func(struct work_struct *work);
+int evdi_ioctl_gbm_get_buff(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_ioctl_gbm_del_buff(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_queue_swap_event(struct evdi_device *evdi, int id, struct drm_file *owner);
 

@@ -9,10 +9,6 @@
 
 extern int evdi_event_system_init(void);
 extern void evdi_event_system_cleanup(void);
-extern const struct drm_ioctl_desc evdi_ioctls[];
-extern const int evdi_num_ioctls;
-extern const struct drm_ioctl_desc *evdi_get_ioctls(void);
-extern int evdi_get_num_ioctls(void);
 extern void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owner);
 
 atomic_t evdi_device_count = ATOMIC_INIT(0);
@@ -36,8 +32,36 @@ static const struct file_operations evdi_fops = {
 };
 #endif
 
+#define EVDI_IOCTL_FLAGS (DRM_UNLOCKED | DRM_RENDER_ALLOW)
+
+static const struct drm_ioctl_desc evdi_ioctls[] = {
+	DRM_IOCTL_DEF_DRV(EVDI_CONNECT, evdi_ioctl_connect,
+			 EVDI_IOCTL_FLAGS),
+	DRM_IOCTL_DEF_DRV(EVDI_POLL, evdi_ioctl_poll,
+			 EVDI_IOCTL_FLAGS),
+	DRM_IOCTL_DEF_DRV(EVDI_REQUEST_UPDATE, evdi_ioctl_request_update,
+			 EVDI_IOCTL_FLAGS),
+	DRM_IOCTL_DEF_DRV(EVDI_GBM_CREATE_BUFF, evdi_ioctl_gbm_create_buff,
+			 EVDI_IOCTL_FLAGS),
+	DRM_IOCTL_DEF_DRV(EVDI_ADD_BUFF_CALLBACK, evdi_ioctl_add_buff_callback,
+			 EVDI_IOCTL_FLAGS),
+	DRM_IOCTL_DEF_DRV(EVDI_GBM_GET_BUFF, evdi_ioctl_gbm_get_buff,
+			 EVDI_IOCTL_FLAGS),
+	DRM_IOCTL_DEF_DRV(EVDI_GET_BUFF_CALLBACK, evdi_ioctl_get_buff_callback,
+			 EVDI_IOCTL_FLAGS),
+	DRM_IOCTL_DEF_DRV(EVDI_DESTROY_BUFF_CALLBACK, evdi_ioctl_destroy_buff_callback,
+			 EVDI_IOCTL_FLAGS),
+	DRM_IOCTL_DEF_DRV(EVDI_SWAP_CALLBACK, evdi_ioctl_swap_callback,
+			 EVDI_IOCTL_FLAGS),
+	DRM_IOCTL_DEF_DRV(EVDI_GBM_CREATE_BUFF_CALLBACK, evdi_ioctl_create_buff_callback,
+			 EVDI_IOCTL_FLAGS),
+	DRM_IOCTL_DEF_DRV(EVDI_GBM_DEL_BUFF, evdi_ioctl_gbm_del_buff,
+			 EVDI_IOCTL_FLAGS),
+};
+
 static struct drm_driver evdi_driver = {
 	.driver_features = DRIVER_MODESET |
+			  DRIVER_RENDER |
 #if EVDI_HAVE_ATOMIC_HELPERS
 			  DRIVER_ATOMIC |
 #endif
@@ -58,8 +82,8 @@ static struct drm_driver evdi_driver = {
 	.fops = &evdi_fops,
 #endif
 
-	.ioctls = NULL,
-	.num_ioctls = 0,
+	.ioctls = evdi_ioctls,
+	.num_ioctls = ARRAY_SIZE(evdi_ioctls),
 
 	.name = DRIVER_NAME,
 	.desc = DRIVER_DESC,
@@ -329,9 +353,6 @@ static int __init evdi_init(void)
 		evdi_err("Failed to initialize event system: %d", ret);
 		return ret;
 	}
-
-	evdi_driver.ioctls = evdi_get_ioctls();
-	evdi_driver.num_ioctls = evdi_get_num_ioctls();
 
 	ret = platform_driver_register(&evdi_platform_driver);
 	if (ret) {
