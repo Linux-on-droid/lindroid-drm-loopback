@@ -19,6 +19,7 @@
 #include <linux/kref.h>
 #include <linux/spinlock.h>
 #include <linux/llist.h>
+#include <linux/file.h>
 
 #if KERNEL_VERSION(5, 5, 0) <= LINUX_VERSION_CODE
 #include <drm/drm_drv.h>
@@ -156,10 +157,23 @@ struct evdi_inflight_req {
 			u32 stride;
 		} create;
 		struct {
-			struct evdi_gralloc_buf gralloc_buf;
 			int status;
+			struct {
+				int version;
+				int numFds;
+				int numInts;
+				struct evdi_gralloc_data *gralloc;
+			} gralloc_buf;
 		} get_buf;
 	} reply;
+};
+
+struct evdi_gralloc_data {
+	int version;
+	int numFds;
+	int numInts;
+	struct file **data_files;
+	int *data_ints;
 };
 
 struct evdi_gem_object {

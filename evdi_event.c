@@ -29,12 +29,6 @@ int evdi_event_system_init(void)
 	if (!global_event_pool.drm_cache)
 		goto err_drm_cache;
 
-	global_event_pool.inflight_cache = kmem_cache_create("evdi_inflight",
-		sizeof(struct evdi_inflight_req),
-		0, SLAB_HWCACHE_ALIGN, NULL);
-	if (!global_event_pool.inflight_cache)
-		goto err_inflight_cache;
-
 	atomic_set(&global_event_pool.allocated, 0);
 	atomic_set(&global_event_pool.drm_allocated, 0);
 	atomic_set(&global_event_pool.inflight_allocated, 0);
@@ -61,19 +55,10 @@ int evdi_event_system_init(void)
 				break;
 			kmem_cache_free(global_event_pool.drm_cache, tmp);
 		}
-		
-		for (i = 0; i < prealloc; i++) {
-			tmp = kmem_cache_alloc(global_event_pool.inflight_cache, GFP_NOWAIT);
-			if (!tmp)
-				break;
-			kmem_cache_free(global_event_pool.inflight_cache, tmp);
-		}
 	}
 
 	return 0;
 
-err_inflight_cache:
-	kmem_cache_destroy(global_event_pool.drm_cache);
 err_drm_cache:
 	kmem_cache_destroy(global_event_pool.cache);
 	return -ENOMEM;
@@ -88,10 +73,6 @@ void evdi_event_system_cleanup(void)
 	if (global_event_pool.drm_cache) {
 		kmem_cache_destroy(global_event_pool.drm_cache);
 		global_event_pool.drm_cache = NULL;
-	}
-	if (global_event_pool.inflight_cache) {
-		kmem_cache_destroy(global_event_pool.inflight_cache);
-		global_event_pool.inflight_cache = NULL;
 	}
 
 	evdi_info("Event system cleaned up - Peak: %d, DRM: %lld sent/%lld dropped, Inflight hits: %lld",
@@ -253,11 +234,29 @@ static void evdi_inflight_req_release(struct kref *kref)
 {
 	struct evdi_inflight_req *req =
 		container_of(kref, struct evdi_inflight_req, refcount);
+	struct evdi_gralloc_data *gralloc;
+	int i;
 
 	if (atomic_xchg(&req->freed, 1))
 		return;
 
-	kmem_cache_free(global_event_pool.inflight_cache, req);
+	gralloc = req->reply.get_buf.gralloc_buf.gralloc;
+	if (gralloc) {
+		if (gralloc->data_files) {
+			for (i = 0; i < gralloc->numFds; i++) {
+				if (gralloc->data_files[i])
+					fput(gralloc->data_files[i]);
+			}
+			kfree(gralloc->data_files);
+		}
+		if (gralloc->data_ints) {
+			kfree(gralloc->data_ints);
+		}
+		kfree(gralloc);
+		req->reply.get_buf.gralloc_buf.gralloc = NULL;
+	}
+
+	kfree(req);
 	atomic_dec(&global_event_pool.inflight_allocated);
 }
 
@@ -265,13 +264,13 @@ struct evdi_inflight_req *evdi_inflight_req_alloc(void)
 {
 	struct evdi_inflight_req *req;
 
-	req = kmem_cache_alloc(global_event_pool.inflight_cache, GFP_ATOMIC);
+	req = kzalloc(sizeof(struct evdi_inflight_req), GFP_ATOMIC);
 	if (likely(req)) {
 		atomic_inc(&global_event_pool.inflight_allocated);
 		atomic64_inc(&evdi_perf.inflight_cache_hits);
-		memset(req, 0, sizeof(*req));
 		kref_init(&req->refcount);
 		atomic_set(&req->freed, 0);
+		req->reply.get_buf.gralloc_buf.gralloc = NULL;
 	}
 	return req;
 }
@@ -313,12 +312,10 @@ void evdi_event_free(struct evdi_event *event)
 
 static inline bool evdi_event_queue_lockfree(struct evdi_device *evdi, struct evdi_event *event)
 {
-	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress)))
+	if (unlikely(atomic_read_acquire(&evdi->events.cleanup_in_progress)))
 		return false;
 
-	evdi_smp_rmb();
-	
-	if (unlikely(atomic_read(&evdi->events.stopping)))
+	if (unlikely(atomic_read_acquire(&evdi->events.stopping)))
 		return false;
 
 	llist_add(&event->llist, &evdi->events.lockfree_head);
@@ -327,7 +324,7 @@ static inline bool evdi_event_queue_lockfree(struct evdi_device *evdi, struct ev
 	atomic64_inc(&evdi->events.events_queued);
 	atomic64_inc(&evdi_perf.event_queue_ops);
 	
-	evdi_smp_mb();
+	evdi_smp_wmb();
 	
 	wake_up_interruptible(&evdi->events.wait_queue);
 	atomic64_inc(&evdi_perf.wakeup_count);
@@ -376,16 +373,14 @@ struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi)
 	struct evdi_event *head, *next;
 	struct llist_node *node;
 	struct evdi_event *event;
-		
 
  	if (unlikely(!evdi))
  		return NULL;
 
-	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress)))
+	if (unlikely(atomic_read_acquire(&evdi->events.cleanup_in_progress)))
 		goto spinlock_path;
 
-	evdi_smp_rmb();
-	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress)))
+	if (unlikely(atomic_read_acquire(&evdi->events.cleanup_in_progress)))
 		goto spinlock_path;
 
 	node = llist_del_first(&evdi->events.lockfree_head);
@@ -436,6 +431,8 @@ void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file)
 		return;
 
 	atomic_set(&evdi->events.cleanup_in_progress, 1);
+	atomic_set(&evdi->events.stopping, 1);
+	evdi_smp_wmb();
 
 	evdi_smp_mb();
 	synchronize_rcu();
@@ -506,6 +503,8 @@ void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file)
 	wake_up_interruptible(&evdi->events.wait_queue);
 	
 	atomic_set(&evdi->events.cleanup_in_progress, 0);
+	atomic_set(&evdi->events.stopping, 0);
+	evdi_smp_wmb();
 	evdi_smp_mb();
 	
 	if (lf_removed || sp_removed)
