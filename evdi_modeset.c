@@ -9,11 +9,11 @@
 
 static const struct drm_mode_config_funcs evdi_mode_config_funcs = {
 #if EVDI_HAVE_ATOMIC_HELPERS
-	.fb_create	= drm_gem_fb_create,
+	.fb_create	= evdi_fb_user_fb_create,
 	.atomic_check	= drm_atomic_helper_check,
 	.atomic_commit	= drm_atomic_helper_commit,
 #else
-	.fb_create	= drm_gem_fb_create,
+	.fb_create	= evdi_fb_user_fb_create,
 #endif
 };
 
@@ -34,32 +34,38 @@ static void evdi_pipe_disable(struct drm_simple_display_pipe *pipe)
 	drm_crtc_vblank_off(&pipe->crtc);
 }
 
+extern const struct drm_framebuffer_funcs evdifb_funcs;
 static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 			     struct drm_plane_state *old_state)
 {
 	struct drm_plane_state *state = pipe->plane.state;
 	struct evdi_device *evdi = pipe->plane.dev->dev_private;
-	struct drm_framebuffer *old_fb = old_state ? old_state->fb : NULL;
-	struct drm_framebuffer *new_fb = state ? state->fb : NULL;
+	struct drm_framebuffer *fb = state ? state->fb : NULL;
 	struct drm_pending_vblank_event *vblank_ev;
 	struct drm_device *ddev;
 	unsigned long flags;
 
-	if (new_fb && new_fb != old_fb) {
-		drm_crtc_handle_vblank(&pipe->crtc);
-		if (pipe->crtc.state && pipe->crtc.state->event) {
-			ddev = pipe->crtc.dev;
-			vblank_ev = pipe->crtc.state->event;
-			spin_lock_irqsave(&ddev->event_lock, flags);
-			pipe->crtc.state->event = NULL;
-			drm_crtc_send_vblank_event(&pipe->crtc, vblank_ev);
-			spin_unlock_irqrestore(&ddev->event_lock, flags);
-		}
-		evdi_queue_swap_event(evdi, 0, NULL);
-		if (atomic_xchg(&evdi->update_requested, 0)) {
-			evdi_send_drm_update_ready_async(evdi);
-		}
+	if (!fb)
+		return;
+
+	drm_crtc_handle_vblank(&pipe->crtc);
+
+	if (pipe->crtc.state && pipe->crtc.state->event) {
+		ddev = pipe->crtc.dev;
+		vblank_ev = pipe->crtc.state->event;
+		pipe->crtc.state->event = NULL;
+		spin_lock_irqsave(&ddev->event_lock, flags);
+		drm_crtc_send_vblank_event(&pipe->crtc, vblank_ev);
+		spin_unlock_irqrestore(&ddev->event_lock, flags);
 	}
+
+	if (fb->funcs == &evdifb_funcs)
+		evdi_queue_swap_event(evdi, to_evdi_fb(fb)->gralloc_buf_id, NULL);
+	else
+		evdi_queue_swap_event(evdi, 0, NULL);
+
+	if (atomic_xchg(&evdi->update_requested, 0))
+		evdi_send_drm_update_ready_async(evdi);
 }
 
 static const struct drm_simple_display_pipe_funcs evdi_pipe_funcs = {

@@ -43,6 +43,10 @@
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_probe_helper.h>
+#include <drm/drm_framebuffer.h>
+#include <drm/drm_gem.h>
+#include <drm/drm_fourcc.h>
+#include <drm/drm_gem_framebuffer_helper.h>
 #define EVDI_HAVE_KMS_HELPER 1
 #else
 #undef EVDI_HAVE_KMS_HELPER
@@ -91,8 +95,8 @@
 
 #define EVDI_WAIT_TIMEOUT	msecs_to_jiffies(5000)
 
-#define EVDI_MAX_FDS   32
-#define EVDI_MAX_INTS  256
+#define EVDI_MAX_FDS   16
+#define EVDI_MAX_INTS  64
 
 struct evdi_device;
 
@@ -237,6 +241,15 @@ void evdi_inflight_req_put(struct evdi_inflight_req *req);
 extern struct evdi_event_pool *evdi_global_event_pool;
 extern atomic_t evdi_device_count;
 
+static inline void evdi_gem_object_put(struct drm_gem_object *obj)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
+	drm_gem_object_put(obj);
+#else
+	drm_gem_object_put_unlocked(obj);
+#endif
+}
+
 /* evdi_lindroid_drv.c */
 int evdi_device_init(struct evdi_device *evdi, struct platform_device *pdev);
 void evdi_device_cleanup(struct evdi_device *evdi);
@@ -308,6 +321,24 @@ int evdi_gem_fault(struct vm_fault *vmf);
 /* evdi_sysfs.c */
 int evdi_sysfs_init(void);
 void evdi_sysfs_cleanup(void);
+
+/* evdi_fb.c */
+struct drm_framebuffer *evdi_fb_user_fb_create(
+					struct drm_device *dev,
+					struct drm_file *file,
+					const struct drm_mode_fb_cmd2 *mode_cmd);
+
+#define to_evdi_fb(x) container_of(x, struct evdi_framebuffer, base)
+
+struct evdi_framebuffer {
+	struct drm_framebuffer base;
+	struct evdi_gem_object *obj;
+	bool active;
+	int gralloc_buf_id;
+	struct drm_file *owner;
+};
+
+extern const struct drm_framebuffer_funcs evdifb_funcs;
 
 /* Helpers */
 static __always_inline bool evdi_likely_connected(struct evdi_device *evdi)
