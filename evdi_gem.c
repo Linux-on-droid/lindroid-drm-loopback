@@ -321,11 +321,14 @@ int evdi_gem_vmap(struct evdi_gem_object *obj)
 	int ret;
 
 	if (evdi_drm_gem_object_use_import_attach(&obj->base)) {
-#if KERNEL_VERSION(5, 18, 0) <= LINUX_VERSION_CODE
+#if KERNEL_VERSION(5, 11, 0) <= LINUX_VERSION_CODE
 		{
-			struct iosys_map map;
 			int retm;
-
+#if KERNEL_VERSION(5, 18, 0) <= LINUX_VERSION_CODE
+			struct iosys_map map;
+#else
+			struct dma_buf_map map = DMA_BUF_MAP_INIT_VADDR(NULL);
+#endif
 			iosys_map_set_vaddr(&map, NULL);
 			retm = dma_buf_vmap(obj->base.import_attach->dmabuf, &map);
 			if (retm)
