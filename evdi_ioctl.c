@@ -501,6 +501,7 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 #else
 	drm_helper_hpd_irq_event(dev);
 #endif
+	evdi_queue_swap_event(evdi, 0, file);
 	return 0;
 }
 
