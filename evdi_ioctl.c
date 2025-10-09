@@ -501,7 +501,6 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 #else
 	drm_helper_hpd_irq_event(dev);
 #endif
-	evdi_queue_swap_event(evdi, 0, file);
 	return 0;
 }
 
@@ -777,11 +776,8 @@ int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_
 	if (!req)
 		goto out_wake;
 
-	if (req->owner != file) {
+	if (req->owner != file)
 		evdi_warn("get_buff_callback: poll_id %d owned by different file", cb->poll_id);
-		evdi_inflight_req_put(req);
-		goto out_wake;
-	}
 
 	if (cb->numFds < 0 || cb->numInts < 0 ||
 	    cb->numFds > EVDI_MAX_FDS || cb->numInts > EVDI_MAX_INTS) {

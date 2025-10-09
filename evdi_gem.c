@@ -98,6 +98,11 @@ struct evdi_gem_object *evdi_gem_alloc_object(struct drm_device *dev, size_t siz
 {
 	struct evdi_gem_object *obj;
 
+	if (unlikely(!size))
+		return NULL;
+
+	size = round_up(size, PAGE_SIZE);
+
 	obj = kzalloc(sizeof(*obj), GFP_KERNEL);
 	if (obj == NULL)
 		return NULL;
@@ -326,10 +331,10 @@ int evdi_gem_vmap(struct evdi_gem_object *obj)
 			int retm;
 #if KERNEL_VERSION(5, 18, 0) <= LINUX_VERSION_CODE
 			struct iosys_map map;
+			iosys_map_set_vaddr(&map, NULL);
 #else
 			struct dma_buf_map map = DMA_BUF_MAP_INIT_VADDR(NULL);
 #endif
-			iosys_map_set_vaddr(&map, NULL);
 			retm = dma_buf_vmap(obj->base.import_attach->dmabuf, &map);
 			if (retm)
 				return -ENOMEM;

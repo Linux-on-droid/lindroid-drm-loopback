@@ -59,10 +59,7 @@ static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 		spin_unlock_irqrestore(&ddev->event_lock, flags);
 	}
 
-	if (fb->funcs == &evdifb_funcs)
-		evdi_queue_swap_event(evdi, to_evdi_fb(fb)->gralloc_buf_id, NULL);
-	else
-		evdi_queue_swap_event(evdi, 0, NULL);
+	evdi_queue_swap_event(evdi, to_evdi_fb(fb)->gralloc_buf_id, NULL);
 
 	if (atomic_xchg(&evdi->update_requested, 0))
 		evdi_send_drm_update_ready_async(evdi);
