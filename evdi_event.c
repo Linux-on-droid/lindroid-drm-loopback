@@ -420,7 +420,6 @@ void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file)
 	struct evdi_event *event, *next;
 	struct evdi_event *new_head = NULL, *new_tail = NULL;
 	struct evdi_event **restore_events = NULL;
-	int removed = 0;
 	int lf_removed = 0;
 	int sp_removed = 0;
 	int restore_count = 0;
@@ -430,15 +429,14 @@ void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file)
 	if (unlikely(!evdi || !file))
 		return;
 
-	atomic_set(&evdi->events.cleanup_in_progress, 1);
-	atomic_set(&evdi->events.stopping, 1);
-	evdi_smp_wmb();
+	if (atomic_read(&evdi->events.queue_size) == 0 &&
+	    llist_empty(&evdi->events.lockfree_head))
+		return;
 
-	evdi_smp_mb();
-	synchronize_rcu();
+	atomic_set(&evdi->events.cleanup_in_progress, 1);
 
 	{
-		struct llist_node *llnode, *next_node;
+		struct llist_node *llnode, *next_node = NULL;
 		int queue_estimate = atomic_read(&evdi->events.queue_size);
 
 		if (queue_estimate > 0) {
@@ -450,20 +448,18 @@ void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file)
 		llnode = llist_del_all(&evdi->events.lockfree_head);
 
 		while (llnode) {
-			next_node = llnode->next;
 			event = llist_entry(llnode, struct evdi_event, llist);
+			next_node = llnode->next;
 
 			if (event->owner == file) {
 				lf_removed++;
 				atomic_dec(&evdi->events.queue_size);
-				removed++;
 				call_rcu(&event->rcu, evdi_event_free_rcu);
-			} else {
-				if (restore_events && restore_count < restore_capacity)
-					restore_events[restore_count++] = event;
+			} else if (restore_events && restore_count < restore_capacity) {
+				restore_events[restore_count++] = event;
 			}
+			llnode = next_node;
 		}
-		llnode = next_node;
 	}
 	if (restore_events) {
 		for (i = 0; i < restore_count; i++) {
@@ -471,6 +467,7 @@ void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file)
 		}
 		kfree(restore_events);
 	}
+	evdi_smp_wmb();
 
 	spin_lock(&evdi->events.lock);
 
@@ -500,12 +497,9 @@ void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file)
 
 	spin_unlock(&evdi->events.lock);
 
-	wake_up_interruptible(&evdi->events.wait_queue);
-	
 	atomic_set(&evdi->events.cleanup_in_progress, 0);
-	atomic_set(&evdi->events.stopping, 0);
 	evdi_smp_wmb();
-	evdi_smp_mb();
+	wake_up_interruptible(&evdi->events.wait_queue);
 	
 	if (lf_removed || sp_removed)
 		evdi_debug("Cleaned up %d events for closed file (lf:%d sp:%d)",
