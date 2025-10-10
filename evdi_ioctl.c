@@ -448,6 +448,21 @@ static int evdi_queue_get_buf_event_with_id(struct evdi_device *evdi,
 					       get_buf, owner, poll_id);
 }
 
+static inline void evdi_flush_work(struct evdi_device *evdi)
+{
+	if (unlikely(!evdi))
+		return;
+
+	atomic_set(&evdi->events.stopping, 1);
+	evdi_smp_wmb();
+	wake_up_interruptible(&evdi->events.wait_queue);
+	if (evdi->high_perf_wq) {
+		cancel_work_sync(&evdi->send_update_work);
+		cancel_work_sync(&evdi->send_events_work);
+		flush_workqueue(evdi->high_perf_wq);
+	}
+}
+
 int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file)
 {
 	struct evdi_device *evdi = dev->dev_private;
@@ -456,11 +471,14 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 	atomic64_inc(&evdi_perf.ioctl_calls[0]);
 
 	if (!cmd->connected) {
-		evdi->connected = false;
-		atomic_set(&evdi->events.stopping, 1);
-		WRITE_ONCE(evdi->drm_client, NULL);
+		evdi_flush_work(evdi);
 
-		wake_up_interruptible(&evdi->events.wait_queue);
+		mutex_lock(&evdi->config_mutex);
+		evdi->connected = false;
+		mutex_unlock(&evdi->config_mutex);
+
+		WRITE_ONCE(evdi->drm_client, NULL);
+		evdi_smp_wmb();
 
 		evdi_info("Device %d disconnected", evdi->dev_index);
 #ifdef EVDI_HAVE_KMS_HELPER
@@ -471,11 +489,17 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 		return 0;
 	}
 
-
 	if (evdi->high_perf_wq) {
 		cancel_work_sync(&evdi->send_update_work);
 		cancel_work_sync(&evdi->send_events_work);
 		flush_workqueue(evdi->high_perf_wq);
+	}
+
+	if (evdi->drm_client && evdi->drm_client != file) {
+		evdi_warn("Device %d forcefully disconnecting previous client", evdi->dev_index);
+		atomic_set(&evdi->events.stopping, 1);
+		evdi_smp_wmb();
+		wake_up_interruptible(&evdi->events.wait_queue);
 	}
 
 	mutex_lock(&evdi->config_mutex);
@@ -488,12 +512,12 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 	evdi_smp_wmb();
 	WRITE_ONCE(evdi->drm_client, file);
 
-	atomic_set(&evdi->events.stopping, 0);
 	evdi_smp_wmb();
 
 	evdi_info("Device %d connected: %ux%u@%uHz",
 		 evdi->dev_index, cmd->width, cmd->height, cmd->refresh_rate);
 
+	atomic_set(&evdi->events.stopping, 0);
 	atomic_set(&evdi->update_requested, 0);
 
 #ifdef EVDI_HAVE_KMS_HELPER
