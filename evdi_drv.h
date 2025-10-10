@@ -101,14 +101,6 @@
 
 struct evdi_device;
 
-struct evdi_gralloc_buf {
-	int version;
-	int numFds;
-	int numInts;
-	struct file *data_files[EVDI_MAX_FDS];
-	int data_ints[EVDI_MAX_INTS];
-};
-
 struct evdi_gralloc_buf_user {
 	int version;
 	int numFds;
