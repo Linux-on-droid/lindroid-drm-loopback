@@ -35,6 +35,7 @@ int evdi_event_system_init(void)
 	atomic_set(&global_event_pool.peak_usage, 0);
 
 	memset(&evdi_perf, 0, sizeof(evdi_perf));
+	evdi_smp_wmb();
 
 	evdi_info("Event system initialized with slab cache");
 
