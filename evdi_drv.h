@@ -20,6 +20,7 @@
 #include <linux/spinlock.h>
 #include <linux/llist.h>
 #include <linux/file.h>
+#include <linux/mempool.h>
 
 #if KERNEL_VERSION(5, 5, 0) <= LINUX_VERSION_CODE
 #include <drm/drm_drv.h>
@@ -98,6 +99,9 @@
 
 #define EVDI_MAX_FDS   16
 #define EVDI_MAX_INTS  64
+#define EVDI_GRALLOC_POOL_MIN 32
+#define EVDI_INFLIGHT_POOL_MIN 64
+#define EVDI_GRALLOC_DATA_POOL_MIN 32
 
 struct evdi_device;
 
@@ -112,6 +116,9 @@ struct evdi_event_pool {
 	struct kmem_cache *cache;
 	struct kmem_cache *drm_cache;
 	struct kmem_cache *inflight_cache;
+	mempool_t *gralloc_buf_pool;
+	mempool_t *inflight_pool;
+	mempool_t *gralloc_data_pool;
 	atomic_t allocated;
 	atomic_t drm_allocated;
 	atomic_t inflight_allocated;
@@ -142,6 +149,7 @@ struct evdi_inflight_req {
 	struct completion done;
 	struct drm_file *owner;
 	struct kref refcount;
+	atomic_t from_percpu;
 	atomic_t freed;
 	union {
 		struct {
@@ -238,13 +246,25 @@ struct evdi_device {
 	struct idr inflight_idr;
 	spinlock_t inflight_lock;
 #endif
+	struct evdi_percpu_gralloc __percpu	*percpu_gralloc_buf;
+	struct evdi_percpu_inflight __percpu	*percpu_inflight;
+};
+
+struct evdi_percpu_gralloc {
+	struct evdi_gralloc_buf_user	buf;
+	atomic_t			in_use;
+};
+
+struct evdi_percpu_inflight {
+	struct evdi_inflight_req	req;
+	atomic_t			in_use;
 };
 
 struct evdi_inflight_req;
 void evdi_inflight_req_get(struct evdi_inflight_req *req);
 void evdi_inflight_req_put(struct evdi_inflight_req *req);
 
-extern struct evdi_event_pool *evdi_global_event_pool;
+extern struct evdi_event_pool global_event_pool;
 extern atomic_t evdi_device_count;
 
 static inline void evdi_gem_object_put(struct drm_gem_object *obj)
@@ -425,6 +445,8 @@ struct evdi_perf_counters {
 	atomic64_t callback_completions;
 	atomic64_t swap_pollid_found;
 	atomic64_t swap_pollid_notfound;
+	atomic64_t inflight_percpu_hits;
+	atomic64_t inflight_percpu_misses;
 };
 
 extern struct evdi_perf_counters evdi_perf;

@@ -9,10 +9,40 @@
 #include <linux/jiffies.h>
 #include <linux/uaccess.h>
 
-static struct evdi_event_pool global_event_pool = {0};
+struct evdi_event_pool global_event_pool = {0};
 static void evdi_inflight_req_release(struct kref *kref);
 
 struct evdi_perf_counters evdi_perf;
+
+static void *evdi_gralloc_buf_alloc(gfp_t gfp_mask, void *pool_data)
+{
+	return kvzalloc(sizeof(struct evdi_gralloc_buf_user), gfp_mask);
+}
+
+static void evdi_gralloc_buf_free(void *element, void *pool_data)
+{
+	kvfree(element);
+}
+
+static void *evdi_inflight_req_pool_alloc(gfp_t gfp_mask, void *pool_data)
+{
+	return kvzalloc(sizeof(struct evdi_inflight_req), gfp_mask);
+}
+
+static void evdi_inflight_req_pool_free(void *element, void *pool_data)
+{
+	kvfree(element);
+}
+
+static void *evdi_gralloc_data_alloc(gfp_t gfp_mask, void *pool_data)
+{
+	return kvzalloc(sizeof(struct evdi_gralloc_data), gfp_mask);
+}
+
+static void evdi_gralloc_data_free(void *element, void *pool_data)
+{
+	kvfree(element);
+}
 
 int evdi_event_system_init(void)
 {
@@ -37,7 +67,31 @@ int evdi_event_system_init(void)
 	memset(&evdi_perf, 0, sizeof(evdi_perf));
 	evdi_smp_wmb();
 
-	evdi_info("Event system initialized with slab cache");
+	global_event_pool.gralloc_buf_pool = mempool_create(
+		EVDI_GRALLOC_POOL_MIN,
+		evdi_gralloc_buf_alloc,
+		evdi_gralloc_buf_free,
+		NULL);
+	if (!global_event_pool.gralloc_buf_pool)
+		goto err_gralloc_pool;
+
+	global_event_pool.inflight_pool = mempool_create(
+		EVDI_INFLIGHT_POOL_MIN,
+		evdi_inflight_req_pool_alloc,
+		evdi_inflight_req_pool_free,
+		NULL);
+	if (!global_event_pool.inflight_pool)
+		goto err_inflight_pool;
+
+	global_event_pool.gralloc_data_pool = mempool_create(
+		EVDI_GRALLOC_DATA_POOL_MIN,
+		evdi_gralloc_data_alloc,
+		evdi_gralloc_data_free,
+		NULL);
+	if (!global_event_pool.gralloc_data_pool)
+		goto err_gralloc_data_pool;
+
+	evdi_info("Event system initialized with slab cache and mempool");
 
 	/* Pre-warm caches */
 	{
@@ -60,6 +114,12 @@ int evdi_event_system_init(void)
 
 	return 0;
 
+err_gralloc_data_pool:
+	mempool_destroy(global_event_pool.inflight_pool);
+err_inflight_pool:
+	mempool_destroy(global_event_pool.gralloc_buf_pool);
+err_gralloc_pool:
+	kmem_cache_destroy(global_event_pool.drm_cache);
 err_drm_cache:
 	kmem_cache_destroy(global_event_pool.cache);
 	return -ENOMEM;
@@ -67,6 +127,15 @@ err_drm_cache:
 
 void evdi_event_system_cleanup(void)
 {
+	if (global_event_pool.gralloc_data_pool)
+		mempool_destroy(global_event_pool.gralloc_data_pool);
+
+	if (global_event_pool.inflight_pool)
+		mempool_destroy(global_event_pool.inflight_pool);
+
+	if (global_event_pool.gralloc_buf_pool)
+		mempool_destroy(global_event_pool.gralloc_buf_pool);
+
 	if (global_event_pool.cache) {
 		kmem_cache_destroy(global_event_pool.cache);
 		global_event_pool.cache = NULL;
@@ -87,6 +156,19 @@ int evdi_event_init(struct evdi_device *evdi)
 {
 	if (unlikely(!evdi))
 		return -EINVAL;
+
+	evdi->percpu_gralloc_buf = alloc_percpu(struct evdi_percpu_gralloc);
+	if (!evdi->percpu_gralloc_buf) {
+		evdi_err("Failed to allocate per-CPU gralloc buffers");
+		return -ENOMEM;
+	}
+
+	evdi->percpu_inflight = alloc_percpu(struct evdi_percpu_inflight);
+	if (!evdi->percpu_inflight) {
+		evdi_err("Failed to allocate per-CPU inflight buffers");
+		free_percpu(evdi->percpu_gralloc_buf);
+		return -ENOMEM;
+	}
 
 	spin_lock_init(&evdi->events.lock);
 	init_waitqueue_head(&evdi->events.wait_queue);
@@ -122,6 +204,9 @@ void evdi_event_cleanup(struct evdi_device *evdi)
 	atomic_set(&evdi->events.stopping, 1);
 
 	evdi_smp_wmb();
+
+	evdi->percpu_inflight = NULL;
+	evdi->percpu_gralloc_buf = NULL;
 
 	wake_up_all(&evdi->events.wait_queue);
 
@@ -235,6 +320,7 @@ static void evdi_inflight_req_release(struct kref *kref)
 {
 	struct evdi_inflight_req *req =
 		container_of(kref, struct evdi_inflight_req, refcount);
+	struct evdi_percpu_inflight *percpu_req;
 	struct evdi_gralloc_data *gralloc;
 	int i;
 
@@ -245,19 +331,29 @@ static void evdi_inflight_req_release(struct kref *kref)
 	if (gralloc) {
 		if (gralloc->data_files) {
 			for (i = 0; i < gralloc->numFds; i++) {
-				if (gralloc->data_files[i])
+				if (gralloc->data_files[i]) {
 					fput(gralloc->data_files[i]);
+					gralloc->data_files[i] = NULL;
+				}
 			}
-			kfree(gralloc->data_files);
+			kvfree(gralloc->data_files);
+			gralloc->data_files = NULL;
 		}
 		if (gralloc->data_ints) {
-			kfree(gralloc->data_ints);
+			kvfree(gralloc->data_ints);
+			gralloc->data_ints = NULL;
 		}
-		kfree(gralloc);
+		mempool_free(gralloc, global_event_pool.gralloc_data_pool);
 		req->reply.get_buf.gralloc_buf.gralloc = NULL;
 	}
 
-	kfree(req);
+	if (atomic_read(&req->from_percpu)) {
+		percpu_req = container_of(req, struct evdi_percpu_inflight, req);
+		atomic_set(&percpu_req->in_use, 0);
+		evdi_smp_wmb();
+	} else {
+		mempool_free(req, global_event_pool.inflight_pool);
+	}
 	atomic_dec(&global_event_pool.inflight_allocated);
 }
 
@@ -265,11 +361,14 @@ struct evdi_inflight_req *evdi_inflight_req_alloc(void)
 {
 	struct evdi_inflight_req *req;
 
-	req = kzalloc(sizeof(struct evdi_inflight_req), GFP_ATOMIC);
+	req = mempool_alloc(global_event_pool.inflight_pool, GFP_ATOMIC);
 	if (likely(req)) {
+		memset(req, 0, sizeof(*req));
 		atomic_inc(&global_event_pool.inflight_allocated);
 		atomic64_inc(&evdi_perf.inflight_cache_hits);
 		kref_init(&req->refcount);
+		init_completion(&req->done);
+		atomic_set(&req->from_percpu, 0);
 		atomic_set(&req->freed, 0);
 		req->reply.get_buf.gralloc_buf.gralloc = NULL;
 	}

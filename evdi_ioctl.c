@@ -215,15 +215,36 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 						     int *out_id)
 {
 	struct evdi_inflight_req *req;
+	struct evdi_percpu_inflight *percpu_req;
+	bool from_percpu = false;
 	int id;
 
-	req = evdi_inflight_req_alloc();
+	percpu_req = get_cpu_ptr(evdi->percpu_inflight);
+	if (likely(percpu_req && atomic_cmpxchg(&percpu_req->in_use, 0, 1) == 0)) {
+		req = &percpu_req->req;
+		from_percpu = true;
+		memset(req, 0, sizeof(*req));
+		kref_init(&req->refcount);
+		init_completion(&req->done);
+		atomic_set(&req->freed, 0);
+		atomic_set(&req->from_percpu, 1);
+		req->reply.get_buf.gralloc_buf.gralloc = NULL;
+		atomic64_inc(&evdi_perf.inflight_percpu_hits);
+	}
+	put_cpu_ptr(percpu_req);
+
+	// fallback to mempool
+	if (!from_percpu) {
+		req = evdi_inflight_req_alloc();
+		if (likely(req))
+			atomic64_inc(&evdi_perf.inflight_percpu_misses);
+	}
+
 	if (unlikely(!req))
 		return NULL;
 
 	req->type = type;
 	req->owner = owner;
-	init_completion(&req->done);
 
 #ifdef EVDI_HAVE_XARRAY
 	{
@@ -636,7 +657,7 @@ int evdi_ioctl_gbm_get_buff(struct drm_device *dev, void *data, struct drm_file 
 		return -EINVAL;
 	}
 
-	gralloc_buf = kzalloc(sizeof(struct evdi_gralloc_buf_user), GFP_KERNEL);
+	gralloc_buf = mempool_alloc(global_event_pool.gralloc_buf_pool, GFP_KERNEL);
 	if (unlikely(!gralloc_buf)) {
 		evdi_inflight_req_put(req);
 		return -ENOMEM;
@@ -692,7 +713,7 @@ err_event:
 			}
 		}
 	}
-	kfree(gralloc_buf);
+	mempool_free(gralloc_buf, global_event_pool.gralloc_buf_pool);
 	evdi_inflight_req_put(req);
 	return ret;
 }
@@ -807,7 +828,7 @@ int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_
 
 	if (cb->numFds < 0 || cb->numInts < 0 ||
 	    cb->numFds > EVDI_MAX_FDS || cb->numInts > EVDI_MAX_INTS) {
-		gralloc = kzalloc(sizeof(struct evdi_gralloc_data), GFP_KERNEL);
+		gralloc = mempool_alloc(global_event_pool.gralloc_data_pool, GFP_KERNEL);
 		if (gralloc) {
 			gralloc->version = cb->version;
 			gralloc->numFds = 0;
@@ -820,7 +841,7 @@ int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_
 	nfd = cb->numFds;
 	nint = cb->numInts;
 
-	gralloc = kzalloc(sizeof(struct evdi_gralloc_data), GFP_KERNEL);
+	gralloc = mempool_alloc(global_event_pool.gralloc_data_pool, GFP_KERNEL);
 	if (!gralloc)
 		goto out_complete;
 
@@ -831,7 +852,7 @@ int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_
 
 	if (nint) {
 		gralloc->data_ints =
-			kcalloc(nint, sizeof(int), GFP_KERNEL);
+			kvcalloc(nint, sizeof(int), GFP_KERNEL);
 		if (!gralloc->data_ints)
 			goto out_complete;
 
@@ -845,7 +866,7 @@ int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_
 
 	if (nfd) {
 		gralloc->data_files =
-			kcalloc(nfd, sizeof(struct file *), GFP_KERNEL);
+			kvcalloc(nfd, sizeof(struct file *), GFP_KERNEL);
 		if (!gralloc->data_files)
 			goto out_complete;
 
