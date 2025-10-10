@@ -535,6 +535,8 @@ int evdi_ioctl_request_update(struct drm_device *dev, void *data, struct drm_fil
 	if (unlikely(!evdi_likely_connected(evdi)))
 		return -ENODEV;
 
+	atomic64_inc(&evdi_perf.ioctl_calls[8]);
+
 	atomic_set(&evdi->update_requested, 1);
 	return 0;
 }
@@ -599,7 +601,7 @@ int evdi_ioctl_gbm_get_buff(struct drm_device *dev, void *data, struct drm_file 
 	int i;
 	int installed_fds[EVDI_MAX_FDS];
 
-//     atomic64_inc(&evdi_perf.ioctl_calls[6]);
+	atomic64_inc(&evdi_perf.ioctl_calls[7]);
 
 	req = evdi_inflight_alloc(evdi, file, get_buf, &poll_id);
 	if (!req)
