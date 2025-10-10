@@ -43,6 +43,7 @@ static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 	struct drm_framebuffer *fb = state ? state->fb : NULL;
 	struct drm_pending_vblank_event *vblank_ev;
 	struct drm_device *ddev;
+	struct evdi_framebuffer *efb;
 	unsigned long flags;
 
 	if (!fb)
@@ -59,7 +60,8 @@ static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 		spin_unlock_irqrestore(&ddev->event_lock, flags);
 	}
 
-	evdi_queue_swap_event(evdi, to_evdi_fb(fb)->gralloc_buf_id, NULL);
+	efb = to_evdi_fb(fb);
+	evdi_queue_swap_event(evdi, efb->gralloc_buf_id, efb->owner);
 
 	if (atomic_xchg(&evdi->update_requested, 0))
 		evdi_send_drm_update_ready_async(evdi);
