@@ -800,8 +800,8 @@ int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_
 	if (!req)
 		goto out_wake;
 
-	if (req->owner != file)
-		evdi_warn("get_buff_callback: poll_id %d owned by different file", cb->poll_id);
+//	if (req->owner != file)
+//		evdi_warn("get_buff_callback: poll_id %d owned by different file", cb->poll_id);
 
 	if (cb->numFds < 0 || cb->numInts < 0 ||
 	    cb->numFds > EVDI_MAX_FDS || cb->numInts > EVDI_MAX_INTS) {
@@ -904,8 +904,8 @@ int evdi_ioctl_swap_callback(struct drm_device *dev, void *data, struct drm_file
 	if (likely(req)) {
 		complete_all(&req->done);
 		evdi_inflight_req_put(req);
-	} else {
-		evdi_warn("swap_callback: poll_id %d not found", cb->poll_id);
+//       } else {
+//               evdi_warn("swap_callback: poll_id %d not found", cb->poll_id);
 	}
 
 	wake_up_interruptible(&evdi->events.wait_queue);
