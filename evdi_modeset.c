@@ -50,9 +50,6 @@ static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 	struct evdi_framebuffer *efb;
 	unsigned long flags;
 
-	if (!fb)
-		return;
-
 	drm_crtc_handle_vblank(&pipe->crtc);
 
 	if (pipe->crtc.state && pipe->crtc.state->event) {
@@ -63,6 +60,9 @@ static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 		drm_crtc_send_vblank_event(&pipe->crtc, vblank_ev);
 		spin_unlock_irqrestore(&ddev->event_lock, flags);
 	}
+
+	if (!fb)
+		return;
 
 	efb = to_evdi_fb(fb);
 
