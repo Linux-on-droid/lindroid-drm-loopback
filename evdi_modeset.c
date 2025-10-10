@@ -60,7 +60,9 @@ static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 	}
 
 	efb = to_evdi_fb(fb);
-	evdi_queue_swap_event(evdi, efb->gralloc_buf_id, efb->owner);
+
+	if (efb && efb->owner && efb->gralloc_buf_id)
+		evdi_queue_swap_event(evdi, efb->gralloc_buf_id, efb->owner);
 
 	if (atomic_xchg(&evdi->update_requested, 0))
 		evdi_send_drm_update_ready_async(evdi);
