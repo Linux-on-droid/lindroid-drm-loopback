@@ -903,11 +903,12 @@ int evdi_ioctl_swap_callback(struct drm_device *dev, void *data, struct drm_file
 	atomic64_inc(&evdi_perf.callback_completions);
 
 	req = evdi_inflight_take(evdi, cb->poll_id);
-	if (likely(req)) {
+	if (req) {
 		complete_all(&req->done);
 		evdi_inflight_req_put(req);
-//       } else {
-//               evdi_warn("swap_callback: poll_id %d not found", cb->poll_id);
+		atomic64_inc(&evdi_perf.swap_pollid_found);
+	} else {
+		atomic64_inc(&evdi_perf.swap_pollid_notfound);
 	}
 
 	wake_up_interruptible(&evdi->events.wait_queue);

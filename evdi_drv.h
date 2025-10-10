@@ -423,6 +423,8 @@ struct evdi_perf_counters {
 	atomic64_t drm_events_dropped;
 	atomic64_t inflight_cache_hits;
 	atomic64_t callback_completions;
+	atomic64_t swap_pollid_found;
+	atomic64_t swap_pollid_notfound;
 };
 
 extern struct evdi_perf_counters evdi_perf;
