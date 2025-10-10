@@ -34,7 +34,6 @@ static void evdi_pipe_disable(struct drm_simple_display_pipe *pipe)
 	drm_crtc_vblank_off(&pipe->crtc);
 }
 
-extern const struct drm_framebuffer_funcs evdifb_funcs;
 static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 			     struct drm_plane_state *old_state)
 {

@@ -293,6 +293,7 @@ void evdi_send_events_work_func(struct work_struct *work);
 int evdi_ioctl_gbm_get_buff(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_ioctl_gbm_del_buff(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_queue_swap_event(struct evdi_device *evdi, int id, struct drm_file *owner);
+int evdi_queue_destroy_event(struct evdi_device *evdi, int id, struct drm_file *owner);
 
 /* evdi_event.c */
 int evdi_event_init(struct evdi_device *evdi);
@@ -351,8 +352,6 @@ struct evdi_framebuffer {
 	int gralloc_buf_id;
 	struct drm_file *owner;
 };
-
-extern const struct drm_framebuffer_funcs evdifb_funcs;
 
 /* Helpers */
 static __always_inline bool evdi_likely_connected(struct evdi_device *evdi)
