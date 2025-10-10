@@ -34,15 +34,15 @@ static int evdi_connector_get_modes(struct drm_connector *connector)
 	mode->hdisplay = evdi->width;
 	mode->vdisplay = evdi->height;
 
-	mode->clock = evdi->width * evdi->height * evdi->refresh_rate / 1000;
-
-	mode->hsync_start = mode->hdisplay + 8;
-	mode->hsync_end = mode->hsync_start + 8;
-	mode->htotal = mode->hsync_end + 8;
+	mode->hsync_start = mode->hdisplay + 1;
+	mode->hsync_end = mode->hsync_start + 1;
+	mode->htotal = mode->hsync_end + 1;
 
 	mode->vsync_start = mode->vdisplay + 1;
 	mode->vsync_end = mode->vsync_start + 1;
 	mode->vtotal = mode->vsync_end + 1;
+
+	mode->clock = mode->htotal * mode->vtotal * evdi->refresh_rate / 1000;
 
 	mode->type = DRM_MODE_TYPE_PREFERRED | DRM_MODE_TYPE_DRIVER;
 
@@ -66,7 +66,7 @@ evdi_connector_mode_valid(struct drm_connector *connector,
 	if (mode->vdisplay < 480 || mode->vdisplay > 8192)
 		return MODE_BAD_VVALUE;
 
-	if (vrefresh < 30 || vrefresh > 240)
+	if (vrefresh < 23 || vrefresh > 240)
 		return MODE_BAD;
 
 	return MODE_OK;
