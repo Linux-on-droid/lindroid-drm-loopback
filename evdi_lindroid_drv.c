@@ -209,6 +209,30 @@ void evdi_device_cleanup(struct evdi_device *evdi)
 
 	WRITE_ONCE(evdi->drm_client, NULL);
 
+#ifdef EVDI_HAVE_XARRAY
+	{
+		struct evdi_inflight_req *req;
+		unsigned long index;
+		xa_for_each(&evdi->inflight_xa, index, req) {
+			xa_erase(&evdi->inflight_xa, index);
+			complete_all(&req->done);
+			evdi_inflight_req_put(req);
+		}
+	}
+#else
+	{
+		struct evdi_inflight_req *req;
+		int id;
+		spin_lock(&evdi->inflight_lock);
+		idr_for_each_entry(&evdi->inflight_idr, req, id) {
+			idr_remove(&evdi->inflight_idr, id);
+			complete_all(&req->done);
+			evdi_inflight_req_put(req);
+		}
+		spin_unlock(&evdi->inflight_lock);
+	}
+#endif
+
 	evdi_smp_wmb();
 
 	if (evdi->high_perf_wq) {
