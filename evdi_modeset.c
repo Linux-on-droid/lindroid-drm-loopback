@@ -26,6 +26,11 @@ static void evdi_pipe_enable(struct drm_simple_display_pipe *pipe,
 			     struct drm_crtc_state *crtc_state,
 			     struct drm_plane_state *plane_state)
 {
+	struct evdi_device *evdi = pipe->plane.dev->dev_private;
+
+	atomic_set(&evdi->update_requested, 0);
+	evdi_smp_wmb();
+
 	drm_crtc_vblank_on(&pipe->crtc);
 }
 
@@ -63,6 +68,9 @@ static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 
 	if (efb && efb->owner && efb->gralloc_buf_id)
 		evdi_queue_swap_event(evdi, efb->gralloc_buf_id, efb->owner);
+
+	if (unlikely(!READ_ONCE(evdi->drm_client)))
+		return;
 
 	if (atomic_xchg(&evdi->update_requested, 0))
 		evdi_send_drm_update_ready_async(evdi);
