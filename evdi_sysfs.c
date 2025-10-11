@@ -117,8 +117,6 @@ static ssize_t stats_show(struct device *dev, struct device_attribute *attr, cha
 	"  Slow path allocs: %lld\n"
 	"  Wakeups: %lld\n"
 	"  Poll cycles: %lld\n"
-	"  Swaps with poll_id: %lld\n"
-	"  Swaps without poll_id: %lld\n"
 	"  Inflight per-CPU hits: %lld\n"
 	"  Inflight per-CPU misses: %lld\n"
 	"=====================================\n",
@@ -137,8 +135,6 @@ static ssize_t stats_show(struct device *dev, struct device_attribute *attr, cha
 	(long long)atomic64_read(&evdi_perf.pool_alloc_slow),
 	(long long)atomic64_read(&evdi_perf.wakeup_count),
 	(long long)atomic64_read(&evdi_perf.poll_cycles),
-	(long long)atomic64_read(&evdi_perf.swap_pollid_found),
-	(long long)atomic64_read(&evdi_perf.swap_pollid_notfound),
 	(long long)atomic64_read(&evdi_perf.inflight_percpu_hits),
 	(long long)atomic64_read(&evdi_perf.inflight_percpu_misses));
 }
