@@ -186,6 +186,7 @@ int evdi_event_init(struct evdi_device *evdi)
 	atomic64_set(&evdi->events.events_dequeued, 0);
 	atomic64_set(&evdi->events.pool_hits, 0);
 	atomic64_set(&evdi->events.pool_misses, 0);
+	atomic_set(&evdi->events.wake_pending, 0);
 
 	evdi_smp_wmb();
 
@@ -425,9 +426,11 @@ static inline bool evdi_event_queue_lockfree(struct evdi_device *evdi, struct ev
 	atomic64_inc(&evdi_perf.event_queue_ops);
 	
 	evdi_smp_wmb();
-	
-	wake_up_interruptible(&evdi->events.wait_queue);
-	atomic64_inc(&evdi_perf.wakeup_count);
+
+	if (atomic_cmpxchg(&evdi->events.wake_pending, 0, 1) == 0) {
+		wake_up_interruptible(&evdi->events.wait_queue);
+		atomic64_inc(&evdi_perf.wakeup_count);
+	}
 	
 	return true;
 }
@@ -463,9 +466,11 @@ void evdi_event_queue(struct evdi_device *evdi, struct evdi_event *event)
 
 	atomic_inc(&evdi->events.queue_size);
 	atomic64_inc(&evdi->events.events_queued);
-	wake_up_interruptible(&evdi->events.wait_queue);
 	atomic64_inc(&evdi_perf.event_queue_ops);
-	atomic64_inc(&evdi_perf.wakeup_count);
+	if (atomic_cmpxchg(&evdi->events.wake_pending, 0, 1) == 0) {
+		wake_up_interruptible(&evdi->events.wait_queue);
+		atomic64_inc(&evdi_perf.wakeup_count);
+	}
 }
 
 struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi)
@@ -492,7 +497,10 @@ struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi)
 	atomic_dec(&evdi->events.queue_size);
 	atomic64_inc(&evdi->events.events_dequeued);
 	atomic64_inc(&evdi_perf.event_dequeue_ops);
-		
+
+	atomic_set(&evdi->events.wake_pending, 0);
+	evdi_smp_wmb();
+
 	return event;
 
 spinlock_path:
@@ -508,6 +516,8 @@ spinlock_path:
 		atomic_dec(&evdi->events.queue_size);
 		atomic64_inc(&evdi->events.events_dequeued);
 		atomic64_inc(&evdi_perf.event_dequeue_ops);
+		atomic_set(&evdi->events.wake_pending, 0);
+		evdi_smp_wmb();
 	}
 	
 	spin_unlock(&evdi->events.lock);
@@ -615,6 +625,8 @@ int evdi_event_wait(struct evdi_device *evdi, struct drm_file *file)
 
 	for (;;) {
 		prepare_to_wait(&evdi->events.wait_queue, &wait, TASK_INTERRUPTIBLE);
+		atomic_set(&evdi->events.wake_pending, 0);
+		evdi_smp_mb();
 		if (atomic_read(&evdi->events.queue_size) > 0) {
 			ret = 0;
 			break;
@@ -631,7 +643,7 @@ int evdi_event_wait(struct evdi_device *evdi, struct drm_file *file)
 		}
 		schedule();
 	}
-
 	finish_wait(&evdi->events.wait_queue, &wait);
+
 	return ret;
 }

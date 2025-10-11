@@ -223,6 +223,7 @@ struct evdi_device {
 		struct llist_head lockfree_head;
 		wait_queue_head_t wait_queue;
 		struct evdi_event_pool pool;
+		atomic_t wake_pending;
 		atomic_t queue_size;
 		atomic_t next_poll_id;
 		atomic_t stopping;
