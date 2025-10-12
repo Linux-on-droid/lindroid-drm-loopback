@@ -95,7 +95,7 @@ int evdi_event_system_init(void)
 
 	/* Pre-warm caches */
 	{
-		const int prealloc = 128;
+		const int prealloc = 64;
 		int i;
 		void *tmp;
 		for (i = 0; i < prealloc; i++) {
