@@ -261,14 +261,19 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 		if (unlikely(!xid))
 			xid = 1;
 
-		ret = xa_alloc_cyclic(&evdi->inflight_xa, &xid, req,
-				      XA_LIMIT(1, INT_MAX), &evdi->inflight_next_id,
+		ret = xa_alloc_cyclic(&evdi->inflight_xa,
+				      &xid, req,
+				      XA_LIMIT(1, INT_MAX),
+				      &evdi->inflight_next_id,
 				      GFP_NOWAIT);
-		if (ret == -EBUSY) {
-			evdi->inflight_next_id = 1;
-			ret = xa_alloc(&evdi->inflight_xa, &xid, req,
-				       XA_LIMIT(1, EVDI_MAX_INFLIGHT_REQUESTS),
-				       GFP_NOWAIT);
+		if (ret == -EBUSY || ret == -ENOMEM || ret == -EEXIST) {
+			WRITE_ONCE(evdi->inflight_next_id, 1);
+			xid = 1;
+			ret = xa_alloc_cyclic(&evdi->inflight_xa,
+					      &xid, req,
+					      XA_LIMIT(1, INT_MAX),
+					      &evdi->inflight_next_id,
+					      GFP_NOWAIT);
 		}
 		if (ret) {
 			evdi_inflight_req_put(req);
