@@ -151,6 +151,7 @@ struct evdi_inflight_req {
 	struct kref refcount;
 	atomic_t from_percpu;
 	atomic_t freed;
+	u8 percpu_slot;
 	union {
 		struct {
 			int id;
@@ -257,8 +258,8 @@ struct evdi_percpu_gralloc {
 };
 
 struct evdi_percpu_inflight {
-	struct evdi_inflight_req	req;
-	atomic_t			in_use;
+	struct evdi_inflight_req	req[2];
+	atomic_t			in_use[2];
 };
 
 struct evdi_inflight_req;

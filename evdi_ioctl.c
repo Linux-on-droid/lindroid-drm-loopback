@@ -217,19 +217,25 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 	struct evdi_inflight_req *req;
 	struct evdi_percpu_inflight *percpu_req;
 	bool from_percpu = false;
-	int id;
+	int id, i;
 
 	percpu_req = get_cpu_ptr(evdi->percpu_inflight);
-	if (likely(percpu_req && atomic_cmpxchg(&percpu_req->in_use, 0, 1) == 0)) {
-		req = &percpu_req->req;
-		from_percpu = true;
-		memset(req, 0, sizeof(*req));
-		kref_init(&req->refcount);
-		init_completion(&req->done);
-		atomic_set(&req->freed, 0);
-		atomic_set(&req->from_percpu, 1);
-		req->reply.get_buf.gralloc_buf.gralloc = NULL;
-		atomic64_inc(&evdi_perf.inflight_percpu_hits);
+	if (likely(percpu_req)) {
+		for (i = 0; i < 2; i++) {
+			if (atomic_cmpxchg(&percpu_req->in_use[i], 0, 1) == 0) {
+				req = &percpu_req->req[i];
+				from_percpu = true;
+				memset(req, 0, sizeof(*req));
+				kref_init(&req->refcount);
+				init_completion(&req->done);
+				atomic_set(&req->freed, 0);
+				atomic_set(&req->from_percpu, 1);
+				req->percpu_slot = (u8)i;
+				req->reply.get_buf.gralloc_buf.gralloc = NULL;
+				atomic64_inc(&evdi_perf.inflight_percpu_hits);
+				break;
+			}
+		}
 	}
 	put_cpu_ptr(percpu_req);
 

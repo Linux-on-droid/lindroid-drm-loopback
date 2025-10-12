@@ -323,7 +323,7 @@ static void evdi_inflight_req_release(struct kref *kref)
 		container_of(kref, struct evdi_inflight_req, refcount);
 	struct evdi_percpu_inflight *percpu_req;
 	struct evdi_gralloc_data *gralloc;
-	int i;
+	int i, slot;
 
 	if (atomic_xchg(&req->freed, 1))
 		return;
@@ -347,11 +347,12 @@ static void evdi_inflight_req_release(struct kref *kref)
 		mempool_free(gralloc, global_event_pool.gralloc_data_pool);
 		req->reply.get_buf.gralloc_buf.gralloc = NULL;
 	}
-
 	if (atomic_read(&req->from_percpu)) {
-		percpu_req = container_of(req, struct evdi_percpu_inflight, req);
-		atomic_set(&percpu_req->in_use, 0);
-		evdi_smp_wmb();
+		slot = (int)req->percpu_slot;
+		if (slot >= 0 && slot < 2) {
+			percpu_req = container_of(req, struct evdi_percpu_inflight, req[0]);
+			atomic_set(&percpu_req->in_use[slot], 0);
+			evdi_smp_wmb();
 	} else {
 		mempool_free(req, global_event_pool.inflight_pool);
 	}
@@ -481,9 +482,6 @@ struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi)
 
  	if (unlikely(!evdi))
  		return NULL;
-
-	if (unlikely(atomic_read_acquire(&evdi->events.cleanup_in_progress)))
-		goto spinlock_path;
 
 	if (unlikely(atomic_read_acquire(&evdi->events.cleanup_in_progress)))
 		goto spinlock_path;
