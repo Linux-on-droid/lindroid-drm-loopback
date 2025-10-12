@@ -115,6 +115,9 @@ static ssize_t stats_show(struct device *dev, struct device_attribute *attr, cha
 	"  Dequeue operations: %lld\n"
 	"  Fast pool allocs: %lld\n"
 	"  Slow path allocs: %lld\n"
+	"  Event freelist hits: %lld\n"
+	"  Event freelist misses: %lld\n"
+	"  Event freelist pushes: %lld\n"
 	"  Wakeups: %lld\n"
 	"  Poll cycles: %lld\n"
 	"  Inflight per-CPU hits: %lld\n"
@@ -133,6 +136,9 @@ static ssize_t stats_show(struct device *dev, struct device_attribute *attr, cha
 	(long long)atomic64_read(&evdi_perf.event_dequeue_ops),
 	(long long)atomic64_read(&evdi_perf.pool_alloc_fast),
 	(long long)atomic64_read(&evdi_perf.pool_alloc_slow),
+	(long long)atomic64_read(&evdi_perf.event_freelist_pop_hits),
+	(long long)atomic64_read(&evdi_perf.event_freelist_pop_misses),
+	(long long)atomic64_read(&evdi_perf.event_freelist_pushes),
 	(long long)atomic64_read(&evdi_perf.wakeup_count),
 	(long long)atomic64_read(&evdi_perf.poll_cycles),
 	(long long)atomic64_read(&evdi_perf.inflight_percpu_hits),

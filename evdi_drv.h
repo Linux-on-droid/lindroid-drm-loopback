@@ -18,6 +18,7 @@
 #include <linux/jiffies.h>
 #include <linux/kref.h>
 #include <linux/spinlock.h>
+#include <linux/percpu.h>
 #include <linux/llist.h>
 #include <linux/file.h>
 #include <linux/mempool.h>
@@ -445,6 +446,9 @@ struct evdi_perf_counters {
 	atomic64_t drm_events_dropped;
 	atomic64_t inflight_cache_hits;
 	atomic64_t callback_completions;
+	atomic64_t event_freelist_pop_hits;
+	atomic64_t event_freelist_pop_misses;
+	atomic64_t event_freelist_pushes;
 	atomic64_t inflight_percpu_hits;
 	atomic64_t inflight_percpu_misses;
 };

@@ -14,6 +14,44 @@ static void evdi_inflight_req_release(struct kref *kref);
 
 struct evdi_perf_counters evdi_perf;
 
+#define EVDI_PCPU_EVENT_FREE_MAX	64
+struct evdi_pcpu_event_freelist {
+	struct llist_head free;
+	atomic_t free_count;
+};
+
+static struct evdi_pcpu_event_freelist __percpu *evdi_pcpu_event_freelist;
+
+static struct evdi_event *evdi_pcpu_event_pop(void)
+{
+	struct evdi_pcpu_event_freelist *pc;
+	struct llist_node *node;
+
+	if (!evdi_pcpu_event_freelist)
+		return NULL;
+
+	pc = this_cpu_ptr(evdi_pcpu_event_freelist);
+	node = llist_del_first(&pc->free);
+	if (!node)
+		return NULL;
+
+	atomic_dec(&pc->free_count);
+	return llist_entry(node, struct evdi_event, llist);
+}
+
+static bool evdi_pcpu_event_push(struct evdi_event *event)
+{
+	struct evdi_pcpu_event_freelist *pc;
+	if (!evdi_pcpu_event_freelist || !event)
+		return false;
+	pc = this_cpu_ptr(evdi_pcpu_event_freelist);
+	if (atomic_read(&pc->free_count) >= EVDI_PCPU_EVENT_FREE_MAX)
+		return false;
+	llist_add(&event->llist, &pc->free);
+	atomic_inc(&pc->free_count);
+	return true;
+}
+
 static void *evdi_gralloc_buf_alloc(gfp_t gfp_mask, void *pool_data)
 {
 	return kvzalloc(sizeof(struct evdi_gralloc_buf_user), gfp_mask);
@@ -46,6 +84,8 @@ static void evdi_gralloc_data_free(void *element, void *pool_data)
 
 int evdi_event_system_init(void)
 {
+	int cpu;
+	struct evdi_pcpu_event_freelist *pc;
 	global_event_pool.cache = kmem_cache_create("evdi_events",
 						   sizeof(struct evdi_event),
 						   0, SLAB_HWCACHE_ALIGN,
@@ -66,6 +106,15 @@ int evdi_event_system_init(void)
 
 	memset(&evdi_perf, 0, sizeof(evdi_perf));
 	evdi_smp_wmb();
+
+	evdi_pcpu_event_freelist = alloc_percpu(struct evdi_pcpu_event_freelist);
+	if (evdi_pcpu_event_freelist) {
+		for_each_possible_cpu(cpu) {
+			pc = per_cpu_ptr(evdi_pcpu_event_freelist, cpu);
+			init_llist_head(&pc->free);
+			atomic_set(&pc->free_count, 0);
+		}
+	}
 
 	global_event_pool.gralloc_buf_pool = mempool_create(
 		EVDI_GRALLOC_POOL_MIN,
@@ -115,12 +164,18 @@ int evdi_event_system_init(void)
 	return 0;
 
 err_gralloc_data_pool:
+	if (evdi_pcpu_event_freelist)
+		free_percpu(evdi_pcpu_event_freelist);
+
 	mempool_destroy(global_event_pool.inflight_pool);
 err_inflight_pool:
 	mempool_destroy(global_event_pool.gralloc_buf_pool);
 err_gralloc_pool:
 	kmem_cache_destroy(global_event_pool.drm_cache);
 err_drm_cache:
+	if (evdi_pcpu_event_freelist)
+		free_percpu(evdi_pcpu_event_freelist);
+
 	kmem_cache_destroy(global_event_pool.cache);
 	return -ENOMEM;
 }
@@ -143,6 +198,11 @@ void evdi_event_system_cleanup(void)
 	if (global_event_pool.drm_cache) {
 		kmem_cache_destroy(global_event_pool.drm_cache);
 		global_event_pool.drm_cache = NULL;
+	}
+
+	if (evdi_pcpu_event_freelist) {
+		free_percpu(evdi_pcpu_event_freelist);
+		evdi_pcpu_event_freelist = NULL;
 	}
 
 	evdi_info("Event system cleaned up - Peak: %d, DRM: %lld sent/%lld dropped, Inflight hits: %lld",
@@ -239,6 +299,15 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 	struct evdi_event *event;
 	int cur_alloc, peak, new_peak;
 
+	event = evdi_pcpu_event_pop();
+	if (event) {
+		atomic64_inc(&evdi->events.pool_hits);
+		atomic64_inc(&evdi_perf.pool_alloc_fast);
+		atomic64_inc(&evdi_perf.event_freelist_pop_hits);
+		goto init_event;
+	}
+	atomic64_inc(&evdi_perf.event_freelist_pop_misses);
+
 	event = kmem_cache_alloc(global_event_pool.cache, GFP_ATOMIC);
 	if (likely(event)) {
 		atomic64_inc(&evdi->events.pool_hits);
@@ -254,6 +323,7 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 		event->from_pool = false;
 	}
 
+init_event:
 	event->type = type;
 	event->poll_id = poll_id;
 	event->data = data;
@@ -353,6 +423,7 @@ static void evdi_inflight_req_release(struct kref *kref)
 			percpu_req = container_of(req, struct evdi_percpu_inflight, req[0]);
 			atomic_set(&percpu_req->in_use[slot], 0);
 			evdi_smp_wmb();
+		}
 	} else {
 		mempool_free(req, global_event_pool.inflight_pool);
 	}
@@ -382,13 +453,17 @@ void evdi_event_free_immediate(struct evdi_event *event)
 	if (!event)
 		return;
 
+	atomic_dec(&global_event_pool.allocated);
+
 	if (event->from_pool && global_event_pool.cache) {
+		if (evdi_pcpu_event_push(event)) {
+			atomic64_inc(&evdi_perf.event_freelist_pushes);
+			return;
+		}
 		kmem_cache_free(global_event_pool.cache, event);
 	} else {
 		kfree(event);
 	}
-
-	atomic_dec(&global_event_pool.allocated);
 }
 
 void evdi_event_free_rcu(struct rcu_head *head)
