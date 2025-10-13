@@ -14,7 +14,7 @@ static void evdi_inflight_req_release(struct kref *kref);
 
 struct evdi_perf_counters evdi_perf;
 
-#define EVDI_PCPU_EVENT_FREE_MAX	64
+#define EVDI_PCPU_EVENT_FREE_MAX 256
 struct evdi_pcpu_event_freelist {
 	struct llist_head free;
 	atomic_t free_count;
