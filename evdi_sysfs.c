@@ -102,13 +102,11 @@ static ssize_t stats_show(struct device *dev, struct device_attribute *attr, cha
 	"IOCTL calls:\n"
 	"  CONNECT: %lld\n"
 	"  POLL: %lld\n"
-	"  ADD_BUFF_CALLBACK: %lld\n"
 	"  GET_BUFF_CALLBACK: %lld\n"
 	"  DESTROY_BUFF_CALLBACK: %lld\n"
 	"  SWAP_CALLBACK: %lld\n"
 	"  CREATE_BUFF_CALLBACK: %lld\n"
 	"  EVDI_GBM_GET_BUFF: %lld\n"
-	"  EVDI_REQUEST_UPDATE: %lld\n"
 	"\n"
 	"Event system:\n"
 	"  Queue operations: %lld\n"
@@ -125,13 +123,11 @@ static ssize_t stats_show(struct device *dev, struct device_attribute *attr, cha
 	"=====================================\n",
 	(long long)atomic64_read(&evdi_perf.ioctl_calls[0]),
 	(long long)atomic64_read(&evdi_perf.ioctl_calls[1]),
-	(long long)atomic64_read(&evdi_perf.ioctl_calls[2]),
 	(long long)atomic64_read(&evdi_perf.ioctl_calls[3]),
 	(long long)atomic64_read(&evdi_perf.ioctl_calls[4]),
 	(long long)atomic64_read(&evdi_perf.ioctl_calls[5]),
 	(long long)atomic64_read(&evdi_perf.ioctl_calls[6]),
 	(long long)atomic64_read(&evdi_perf.ioctl_calls[7]),
-	(long long)atomic64_read(&evdi_perf.ioctl_calls[8]),
 	(long long)atomic64_read(&evdi_perf.event_queue_ops),
 	(long long)atomic64_read(&evdi_perf.event_dequeue_ops),
 	(long long)atomic64_read(&evdi_perf.pool_alloc_fast),

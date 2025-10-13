@@ -14,7 +14,6 @@
 #include <linux/fs.h>
 #include <linux/wait.h>
 #include <linux/poll.h>
-#include <linux/workqueue.h>
 #include <linux/jiffies.h>
 #include <linux/kref.h>
 #include <linux/spinlock.h>
@@ -79,7 +78,6 @@
 #endif
 
 #if KERNEL_VERSION(5, 10, 0) <= LINUX_VERSION_CODE
-#define EVDI_HAVE_WQ_HIGHPRI 1
 #define EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED 1
 #endif
 
@@ -138,11 +136,6 @@ struct evdi_event {
 	struct llist_node llist;
 	struct evdi_device *evdi;
 	atomic_t freed;
-};
-
-struct evdi_drm_update_ready_event {
-	struct drm_pending_event base;
-	struct drm_evdi_event_update_ready event;
 };
 
 struct evdi_inflight_req {
@@ -207,10 +200,6 @@ struct evdi_device {
 	uint32_t refresh_rate;
 
 	struct drm_file *drm_client;
-	atomic_t update_requested;
-	struct workqueue_struct *high_perf_wq;
-	struct work_struct send_update_work;
-	struct work_struct send_events_work;
 
 	struct {
 		struct rcu_head rcu;
@@ -294,7 +283,6 @@ void evdi_connector_cleanup(struct evdi_device *evdi);
 /* evdi_ioctl.c */
 int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_ioctl_poll(struct drm_device *dev, void *data, struct drm_file *file);
-int evdi_ioctl_add_buff_callback(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_ioctl_destroy_buff_callback(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_ioctl_swap_callback(struct drm_device *dev, void *data, struct drm_file *file);
@@ -302,9 +290,6 @@ int evdi_ioctl_create_buff_callback(struct drm_device *dev, void *data, struct d
 int evdi_ioctl_gbm_create_buff(struct drm_device *dev, void *data, struct drm_file *file);
 void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owner);
 int evdi_ioctl_request_update(struct drm_device *dev, void *data, struct drm_file *file);
-void evdi_send_drm_update_ready_async(struct evdi_device *evdi);
-void evdi_send_update_work_func(struct work_struct *work);
-void evdi_send_events_work_func(struct work_struct *work);
 int evdi_ioctl_gbm_get_buff(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_ioctl_gbm_del_buff(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_queue_swap_event(struct evdi_device *evdi, int id, struct drm_file *owner);
@@ -324,8 +309,6 @@ void evdi_event_queue(struct evdi_device *evdi, struct evdi_event *event);
 struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi);
 void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file);
 int evdi_event_wait(struct evdi_device *evdi, struct drm_file *file);
-struct evdi_drm_update_ready_event *evdi_drm_event_alloc(void);
-void evdi_drm_event_free(struct evdi_drm_update_ready_event *event);
 struct evdi_inflight_req;
 struct evdi_inflight_req *evdi_inflight_req_alloc(void);
 

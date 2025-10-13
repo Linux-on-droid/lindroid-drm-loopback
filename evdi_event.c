@@ -93,14 +93,7 @@ int evdi_event_system_init(void)
 	if (!global_event_pool.cache)
 		return -ENOMEM;
 
-	global_event_pool.drm_cache = kmem_cache_create("evdi_drm_events",
-		sizeof(struct evdi_drm_update_ready_event),
-		0, SLAB_HWCACHE_ALIGN, NULL);
-	if (!global_event_pool.drm_cache)
-		goto err_drm_cache;
-
 	atomic_set(&global_event_pool.allocated, 0);
-	atomic_set(&global_event_pool.drm_allocated, 0);
 	atomic_set(&global_event_pool.inflight_allocated, 0);
 	atomic_set(&global_event_pool.peak_usage, 0);
 
@@ -122,7 +115,7 @@ int evdi_event_system_init(void)
 		evdi_gralloc_buf_free,
 		NULL);
 	if (!global_event_pool.gralloc_buf_pool)
-		goto err_gralloc_pool;
+		goto err;
 
 	global_event_pool.inflight_pool = mempool_create(
 		EVDI_INFLIGHT_POOL_MIN,
@@ -130,7 +123,7 @@ int evdi_event_system_init(void)
 		evdi_inflight_req_pool_free,
 		NULL);
 	if (!global_event_pool.inflight_pool)
-		goto err_inflight_pool;
+		goto err;
 
 	global_event_pool.gralloc_data_pool = mempool_create(
 		EVDI_GRALLOC_DATA_POOL_MIN,
@@ -138,9 +131,9 @@ int evdi_event_system_init(void)
 		evdi_gralloc_data_free,
 		NULL);
 	if (!global_event_pool.gralloc_data_pool)
-		goto err_gralloc_data_pool;
+		goto err;
 
-	evdi_info("Event system initialized with slab cache and mempool");
+	evdi_info("Event system initialized");
 
 	/* Pre-warm caches */
 	{
@@ -153,26 +146,16 @@ int evdi_event_system_init(void)
 				break;
 			kmem_cache_free(global_event_pool.cache, tmp);
 		}
-		for (i = 0; i < prealloc; i++) {
-			tmp = kmem_cache_alloc(global_event_pool.drm_cache, GFP_NOWAIT);
-			if (!tmp)
-				break;
-			kmem_cache_free(global_event_pool.drm_cache, tmp);
-		}
 	}
 
 	return 0;
 
-err_gralloc_data_pool:
+err:
 	if (evdi_pcpu_event_freelist)
 		free_percpu(evdi_pcpu_event_freelist);
 
 	mempool_destroy(global_event_pool.inflight_pool);
-err_inflight_pool:
 	mempool_destroy(global_event_pool.gralloc_buf_pool);
-err_gralloc_pool:
-	kmem_cache_destroy(global_event_pool.drm_cache);
-err_drm_cache:
 	if (evdi_pcpu_event_freelist)
 		free_percpu(evdi_pcpu_event_freelist);
 
@@ -195,20 +178,14 @@ void evdi_event_system_cleanup(void)
 		kmem_cache_destroy(global_event_pool.cache);
 		global_event_pool.cache = NULL;
 	}
-	if (global_event_pool.drm_cache) {
-		kmem_cache_destroy(global_event_pool.drm_cache);
-		global_event_pool.drm_cache = NULL;
-	}
 
 	if (evdi_pcpu_event_freelist) {
 		free_percpu(evdi_pcpu_event_freelist);
 		evdi_pcpu_event_freelist = NULL;
 	}
 
-	evdi_info("Event system cleaned up - Peak: %d, DRM: %lld sent/%lld dropped, Inflight hits: %lld",
+	evdi_info("Event system cleaned up - Peak: %d, Inflight hits: %lld",
 		  atomic_read(&global_event_pool.peak_usage),
-		  atomic64_read(&evdi_perf.drm_events_sent),
-		  atomic64_read(&evdi_perf.drm_events_dropped),
 		  atomic64_read(&evdi_perf.inflight_cache_hits));
 }
 
@@ -347,28 +324,6 @@ init_event:
 #endif
 
 	return event;
-}
-
-struct evdi_drm_update_ready_event *evdi_drm_event_alloc(void)
-{
-	struct evdi_drm_update_ready_event *event;
-	int cur_alloc;
-
-	event = kmem_cache_alloc(global_event_pool.drm_cache, GFP_ATOMIC);
-	if (likely(event)) {
-		cur_alloc = atomic_inc_return(&global_event_pool.drm_allocated);
-		atomic_inc(&global_event_pool.allocated);
-	}
-	return event;
-}
-
-void evdi_drm_event_free(struct evdi_drm_update_ready_event *event)
-{
-	if (likely(event)) {
-		kmem_cache_free(global_event_pool.drm_cache, event);
-		atomic_dec(&global_event_pool.drm_allocated);
-		atomic_dec(&global_event_pool.allocated);
-	}
 }
 
 void evdi_inflight_req_get(struct evdi_inflight_req *req)

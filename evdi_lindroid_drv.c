@@ -39,11 +39,7 @@ static const struct drm_ioctl_desc evdi_ioctls[] = {
 			 EVDI_IOCTL_FLAGS),
 	DRM_IOCTL_DEF_DRV(EVDI_POLL, evdi_ioctl_poll,
 			 EVDI_IOCTL_FLAGS),
-	DRM_IOCTL_DEF_DRV(EVDI_REQUEST_UPDATE, evdi_ioctl_request_update,
-			 EVDI_IOCTL_FLAGS),
 	DRM_IOCTL_DEF_DRV(EVDI_GBM_CREATE_BUFF, evdi_ioctl_gbm_create_buff,
-			 EVDI_IOCTL_FLAGS),
-	DRM_IOCTL_DEF_DRV(EVDI_ADD_BUFF_CALLBACK, evdi_ioctl_add_buff_callback,
 			 EVDI_IOCTL_FLAGS),
 	DRM_IOCTL_DEF_DRV(EVDI_GBM_GET_BUFF, evdi_ioctl_gbm_get_buff,
 			 EVDI_IOCTL_FLAGS),
@@ -115,7 +111,6 @@ static void evdi_driver_postclose(struct drm_device *dev, struct drm_file *file)
 
 	if (READ_ONCE(evdi->drm_client) == file) {
 		WRITE_ONCE(evdi->drm_client, NULL);
-		atomic_set(&evdi->update_requested, 0);
 	}
 
 	evdi_smp_wmb();
@@ -138,7 +133,6 @@ int evdi_device_init(struct evdi_device *evdi, struct platform_device *pdev)
 	evdi->height = 1080;
 	evdi->refresh_rate = 60;
 	evdi->drm_client = NULL;
-	atomic_set(&evdi->update_requested, 0);
 
 	mutex_init(&evdi->config_mutex);
 	
@@ -161,31 +155,13 @@ int evdi_device_init(struct evdi_device *evdi, struct platform_device *pdev)
 		goto err_cleanup_locks;
 	}
 
-#ifdef EVDI_HAVE_WQ_HIGHPRI
-	evdi->high_perf_wq = alloc_workqueue("evdi-hiperf%d",
-					     WQ_HIGHPRI | WQ_UNBOUND | WQ_MEM_RECLAIM,
-					     2, evdi->dev_index);
-#else
-	evdi->high_perf_wq = create_singlethread_workqueue("evdi-events");
-#endif
-	if (!evdi->high_perf_wq)
-		goto err_event_cleanup;
-		
-	INIT_WORK(&evdi->send_update_work, evdi_send_update_work_func);
-	INIT_WORK(&evdi->send_events_work, evdi_send_events_work_func);
-
 	evdi_smp_wmb();
 
 	evdi_info("Device %d initialized", evdi->dev_index);
 	return 0;
 
-err_event_cleanup:
-	evdi_event_cleanup(evdi);
 err_cleanup_locks:
-	if (evdi->high_perf_wq) {
-		destroy_workqueue(evdi->high_perf_wq);
-		evdi->high_perf_wq = NULL;
-	}
+	evdi_event_cleanup(evdi);
 #ifdef EVDI_HAVE_XARRAY
 	xa_destroy(&evdi->file_xa);
 	xa_destroy(&evdi->inflight_xa);
@@ -234,14 +210,6 @@ void evdi_device_cleanup(struct evdi_device *evdi)
 #endif
 
 	evdi_smp_wmb();
-
-	if (evdi->high_perf_wq) {
-		cancel_work_sync(&evdi->send_update_work);
-		cancel_work_sync(&evdi->send_events_work);
-		flush_workqueue(evdi->high_perf_wq);
-		destroy_workqueue(evdi->high_perf_wq);
-		evdi->high_perf_wq = NULL;
-	}
 
 	evdi_debug("Cleaning up device %d", evdi->dev_index);
 

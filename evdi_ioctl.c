@@ -78,137 +78,6 @@ static int evdi_copy_to_user_allow_partial(void __user *dst, const void *src, si
 	return 0;
 }
 
-void evdi_send_update_work_func(struct work_struct *work)
-{
-	struct evdi_drm_update_ready_event *event;
-	struct evdi_device *evdi;
-	struct drm_file *client;
-	unsigned long flags;
-	bool sent = false;
-
-	if (unlikely(!work)) {
-		evdi_err("evdi: NULL work in work function");
-		return;
-	}
-	
-	evdi = container_of(work, struct evdi_device, send_update_work);
-
-	if (unlikely(!evdi))
-		return;
-
-	evdi_smp_rmb();
-
-	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress)))
-		return;
-
-	if (unlikely(!evdi->ddev))
-		return;
-
-	client = READ_ONCE(evdi->drm_client);
-	if (unlikely(!client))
-		return;
-
-	evdi_smp_rmb();
-	
-	if (unlikely(READ_ONCE(evdi->drm_client) != client))
-		return;
-
-	event = evdi_drm_event_alloc();
-	if (unlikely(!event)) {
-		atomic64_inc(&evdi_perf.drm_events_dropped);
-		return;
-	}
-
-	memset(event, 0, sizeof(*event));
-	event->event.base.type = DRM_EVDI_EVENT_UPDATE_READY;
-	event->event.base.length = sizeof(event->event);
-	event->base.event = &event->event.base;
-
-	spin_lock_irqsave(&evdi->ddev->event_lock, flags);
-
-	evdi_smp_rmb();
-
-	client = READ_ONCE(evdi->drm_client);
-	if (unlikely(!client)) {
-		spin_unlock_irqrestore(&evdi->ddev->event_lock, flags);
-		evdi_drm_event_free(event);
-		atomic64_inc(&evdi_perf.drm_events_dropped);
-		evdi_debug("DRM client disappeared during event send for device %d", evdi->dev_index);
-		return;
-	}
-	
-	event->base.file_priv = client;
-#ifdef EVDI_HAVE_DRM_EVENT_RESERVE
-	if (likely(drm_event_reserve_init_locked(evdi->ddev, client,
-						 &event->base, &event->event.base) == 0)) {
-		drm_send_event_locked(evdi->ddev, &event->base);
-		sent = true;
-	}
-#else
-	if (unlikely(!client->event_space || client->event_space < sizeof(event->event))) {
-		spin_unlock_irqrestore(&evdi->ddev->event_lock, flags);
-		evdi_drm_event_free(event);
-		atomic64_inc(&evdi_perf.drm_events_dropped);
-		evdi_debug("Insufficient event space for client on device %d", evdi->dev_index);
-		return;
-	}
-	if (likely(client->event_space >= sizeof(event->event))) {
-		client->event_space -= sizeof(event->event);
-		list_add_tail(&event->base.link, &client->event_list);
-		wake_up_interruptible(&client->event_wait);
-		sent = true;
-	}
-#endif
-	spin_unlock_irqrestore(&evdi->ddev->event_lock, flags);
-
-	if (likely(sent)) {
-		atomic64_inc(&evdi_perf.drm_events_sent);
-	} else {
-		evdi_drm_event_free(event);
-		atomic64_inc(&evdi_perf.drm_events_dropped);
-	}
-}
-
-void evdi_send_events_work_func(struct work_struct *work)
-{
-	struct evdi_device *evdi;
-
-	if (unlikely(!work)) {
-		evdi_err("evdi: NULL work in send_events_work_func");
-		return;
-	}
-	evdi_smp_rmb();
-	evdi = container_of(work, struct evdi_device, send_events_work);
-	
-	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress))) {
-		return;
-	}
-
-	evdi_smp_rmb();
-	wake_up_interruptible(&evdi->events.wait_queue);
-}
-
-void evdi_send_drm_update_ready_async(struct evdi_device *evdi)
-{
-	if (unlikely(!evdi)) {
-		evdi_err("evdi_send_drm_update_ready_async: NULL evdi");
-		return;
-	}
-
-	if (unlikely(atomic_read(&evdi->events.cleanup_in_progress) ||
-		     atomic_read(&evdi->events.stopping))) {
-		return;
-	}
-	if (likely(READ_ONCE(evdi->drm_client) && evdi->high_perf_wq)) {
-		evdi_smp_rmb();
-		if (likely(evdi->ddev && !atomic_read(&evdi->events.stopping))) {
-			queue_work(evdi->high_perf_wq, &evdi->send_update_work);
-		} else {
-			evdi_info("Device %d not ready for async update", evdi->dev_index);
-		}
-	}
-}
-
 static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *evdi,
 						     struct drm_file *owner,
 						     int type,
@@ -488,11 +357,6 @@ static inline void evdi_flush_work(struct evdi_device *evdi)
 	atomic_set(&evdi->events.stopping, 1);
 	evdi_smp_wmb();
 	wake_up_interruptible(&evdi->events.wait_queue);
-	if (evdi->high_perf_wq) {
-		cancel_work_sync(&evdi->send_update_work);
-		cancel_work_sync(&evdi->send_events_work);
-		flush_workqueue(evdi->high_perf_wq);
-	}
 }
 
 int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file)
@@ -521,12 +385,6 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 		return 0;
 	}
 
-	if (evdi->high_perf_wq) {
-		cancel_work_sync(&evdi->send_update_work);
-		cancel_work_sync(&evdi->send_events_work);
-		flush_workqueue(evdi->high_perf_wq);
-	}
-
 	if (evdi->drm_client && evdi->drm_client != file) {
 		evdi_warn("Device %d forcefully disconnecting previous client", evdi->dev_index);
 		atomic_set(&evdi->events.stopping, 1);
@@ -550,26 +408,12 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 		 evdi->dev_index, cmd->width, cmd->height, cmd->refresh_rate);
 
 	atomic_set(&evdi->events.stopping, 0);
-	atomic_set(&evdi->update_requested, 0);
 
 #ifdef EVDI_HAVE_KMS_HELPER
 	drm_kms_helper_hotplug_event(dev);
 #else
 	drm_helper_hpd_irq_event(dev);
 #endif
-	return 0;
-}
-
-int evdi_ioctl_request_update(struct drm_device *dev, void *data, struct drm_file *file)
-{
-	struct evdi_device *evdi = dev->dev_private;
-
-	if (unlikely(!evdi_likely_connected(evdi)))
-		return -ENODEV;
-
-	atomic64_inc(&evdi_perf.ioctl_calls[8]);
-
-	atomic_set(&evdi->update_requested, 1);
 	return 0;
 }
 
@@ -794,28 +638,6 @@ int evdi_ioctl_gbm_create_buff(struct drm_device *dev, void *data, struct drm_fi
 	}
 
 	evdi_inflight_req_put(req);
-	return 0;
-}
-
-int evdi_ioctl_add_buff_callback(struct drm_device *dev, void *data, struct drm_file *file)
-{
-	struct evdi_device *evdi = dev->dev_private;
-	struct drm_evdi_add_buff_callabck *cb = data;
-	struct evdi_inflight_req *req;
-
-	atomic64_inc(&evdi_perf.ioctl_calls[2]);
-	atomic64_inc(&evdi_perf.callback_completions);
-
-	req = evdi_inflight_take(evdi, cb->poll_id);
-
-	if (req) {
-		complete_all(&req->done);
-		evdi_inflight_req_put(req);
-	} else {
-		evdi_warn("add_buff_callback: poll_id %d not found", cb->poll_id);
-	}
-
-	wake_up_interruptible(&evdi->events.wait_queue);
 	return 0;
 }
 
