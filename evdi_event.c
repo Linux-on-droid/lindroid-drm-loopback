@@ -52,16 +52,6 @@ static bool evdi_pcpu_event_push(struct evdi_event *event)
 	return true;
 }
 
-static void *evdi_gralloc_buf_alloc(gfp_t gfp_mask, void *pool_data)
-{
-	return kvzalloc(sizeof(struct evdi_gralloc_buf_user), gfp_mask);
-}
-
-static void evdi_gralloc_buf_free(void *element, void *pool_data)
-{
-	kvfree(element);
-}
-
 static void *evdi_inflight_req_pool_alloc(gfp_t gfp_mask, void *pool_data)
 {
 	return kvzalloc(sizeof(struct evdi_inflight_req), gfp_mask);
@@ -109,14 +99,6 @@ int evdi_event_system_init(void)
 		}
 	}
 
-	global_event_pool.gralloc_buf_pool = mempool_create(
-		EVDI_GRALLOC_POOL_MIN,
-		evdi_gralloc_buf_alloc,
-		evdi_gralloc_buf_free,
-		NULL);
-	if (!global_event_pool.gralloc_buf_pool)
-		goto err;
-
 	global_event_pool.inflight_pool = mempool_create(
 		EVDI_INFLIGHT_POOL_MIN,
 		evdi_inflight_req_pool_alloc,
@@ -155,7 +137,6 @@ err:
 		free_percpu(evdi_pcpu_event_freelist);
 
 	mempool_destroy(global_event_pool.inflight_pool);
-	mempool_destroy(global_event_pool.gralloc_buf_pool);
 	if (evdi_pcpu_event_freelist)
 		free_percpu(evdi_pcpu_event_freelist);
 
@@ -170,9 +151,6 @@ void evdi_event_system_cleanup(void)
 
 	if (global_event_pool.inflight_pool)
 		mempool_destroy(global_event_pool.inflight_pool);
-
-	if (global_event_pool.gralloc_buf_pool)
-		mempool_destroy(global_event_pool.gralloc_buf_pool);
 
 	if (global_event_pool.cache) {
 		kmem_cache_destroy(global_event_pool.cache);
@@ -194,16 +172,9 @@ int evdi_event_init(struct evdi_device *evdi)
 	if (unlikely(!evdi))
 		return -EINVAL;
 
-	evdi->percpu_gralloc_buf = alloc_percpu(struct evdi_percpu_gralloc);
-	if (!evdi->percpu_gralloc_buf) {
-		evdi_err("Failed to allocate per-CPU gralloc buffers");
-		return -ENOMEM;
-	}
-
 	evdi->percpu_inflight = alloc_percpu(struct evdi_percpu_inflight);
 	if (!evdi->percpu_inflight) {
 		evdi_err("Failed to allocate per-CPU inflight buffers");
-		free_percpu(evdi->percpu_gralloc_buf);
 		return -ENOMEM;
 	}
 
@@ -244,7 +215,6 @@ void evdi_event_cleanup(struct evdi_device *evdi)
 	evdi_smp_wmb();
 
 	evdi->percpu_inflight = NULL;
-	evdi->percpu_gralloc_buf = NULL;
 
 	wake_up_all(&evdi->events.wait_queue);
 

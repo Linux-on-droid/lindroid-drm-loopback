@@ -16,6 +16,45 @@
 static int evdi_queue_create_event_with_id(struct evdi_device *evdi, struct drm_evdi_gbm_create_buff *params, struct drm_file *owner, int poll_id);
 int evdi_queue_destroy_event(struct evdi_device *evdi, int id, struct drm_file *owner);
 
+struct evdi_gralloc_buf_stack {
+	struct evdi_gralloc_buf_user buf;
+	int installed_fds[EVDI_MAX_FDS];
+};
+
+static int evdi_process_gralloc_buffer(struct evdi_inflight_req *req,
+					int *installed_fds,
+					struct evdi_gralloc_buf_user *gralloc_buf)
+{
+	struct evdi_gralloc_data *gralloc;
+	int i, fd_tmp;
+
+	gralloc = req->reply.get_buf.gralloc_buf.gralloc;
+	if (!gralloc)
+		return -EINVAL;
+
+	gralloc_buf->version = gralloc->version;
+	gralloc_buf->numFds = gralloc->numFds;
+	gralloc_buf->numInts = gralloc->numInts;
+	if (gralloc->data_ints) {
+		memcpy(&gralloc_buf->data[gralloc_buf->numFds],
+		       gralloc->data_ints,
+		       sizeof(int) * gralloc_buf->numInts);
+	}
+
+	for (i = 0; i < gralloc_buf->numFds; i++) {
+		fd_tmp = get_unused_fd_flags(O_RDWR);
+		if (fd_tmp < 0) {
+			while (--i >= 0)
+				put_unused_fd(installed_fds[i]);
+			return fd_tmp;
+		}
+		installed_fds[i] = fd_tmp;
+		gralloc_buf->data[i] = fd_tmp;
+	}
+
+	return 0;
+}
+
 //Handle short copies due to minor faults on big buffers
 static inline int evdi_prefault_readable(const void __user *uaddr, size_t len)
 {
@@ -469,13 +508,12 @@ int evdi_ioctl_gbm_get_buff(struct drm_device *dev, void *data, struct drm_file 
 	struct drm_evdi_gbm_get_buff *cmd = data;
 	struct evdi_inflight_req *req;
 	struct drm_evdi_gbm_get_buff evt_params;
+	struct evdi_gralloc_buf_stack stack_buf;
 	struct evdi_gralloc_buf_user *gralloc_buf;
 	struct evdi_gralloc_data *gralloc;
 	int poll_id;
 	long ret;
-	int fd_tmp;
-	int i;
-	int installed_fds[EVDI_MAX_FDS];
+	int i, copy_size;
 
 	atomic64_inc(&evdi_perf.ioctl_calls[7]);
 
@@ -506,51 +544,30 @@ int evdi_ioctl_gbm_get_buff(struct drm_device *dev, void *data, struct drm_file 
 			return (int)ret;
 	}
 
+	gralloc_buf = &stack_buf.buf;
+
+	ret = evdi_process_gralloc_buffer(req, stack_buf.installed_fds, gralloc_buf);
+	if (ret) {
+		evdi_inflight_req_put(req);
+		return ret;
+	}
+
 	gralloc = req->reply.get_buf.gralloc_buf.gralloc;
-	if (!gralloc) {
-		evdi_inflight_req_put(req);
-		return -EINVAL;
-	}
-
-	gralloc_buf = mempool_alloc(global_event_pool.gralloc_buf_pool, GFP_KERNEL);
-	if (unlikely(!gralloc_buf)) {
-		evdi_inflight_req_put(req);
-		return -ENOMEM;
-	}
-
-	gralloc_buf->version = gralloc->version;
-	gralloc_buf->numFds = gralloc->numFds;
-	gralloc_buf->numInts = gralloc->numInts;
-	if (gralloc->data_ints) {
-		memcpy(&gralloc_buf->data[gralloc_buf->numFds],
-			gralloc->data_ints,
-			sizeof(int) * gralloc_buf->numInts);
-	}
-
-	for (i = 0; i < gralloc_buf->numFds; i++) {
-			fd_tmp = get_unused_fd_flags(O_RDWR);
-			if (fd_tmp < 0) {
-					while (--i >= 0)
-							put_unused_fd(installed_fds[i]);
-					ret = fd_tmp;
-					goto err_event;
-			}
-			installed_fds[i] = fd_tmp;
-			gralloc_buf->data[i] = fd_tmp;
-	}
-
-	if (evdi_copy_to_user_allow_partial(cmd->native_handle,
-										gralloc_buf,
-										sizeof(int) * (3 + gralloc_buf->numFds + gralloc_buf->numInts))) {
+	copy_size = sizeof(int) * (3 + gralloc_buf->numFds + gralloc_buf->numInts);
+	if (evdi_copy_to_user_allow_partial(cmd->native_handle, gralloc_buf, copy_size)) {
 		for (i = 0; i < gralloc_buf->numFds; i++)
-			put_unused_fd(installed_fds[i]);
+			put_unused_fd(stack_buf.installed_fds[i]);
+
 		ret = -EFAULT;
 		goto err_event;
 	}
 
-	for (i = 0; i < gralloc_buf->numFds; i++)
-		if (gralloc->data_files && gralloc->data_files[i])
-			fd_install(installed_fds[i], gralloc->data_files[i]);
+	if (gralloc && gralloc->data_files) {
+		for (i = 0; i < gralloc_buf->numFds; i++) {
+			if (gralloc->data_files[i])
+				fd_install(stack_buf.installed_fds[i], gralloc->data_files[i]);
+		}
+	}
 
 	ret = 0;
 err_event:
@@ -568,7 +585,6 @@ err_event:
 			}
 		}
 	}
-	mempool_free(gralloc_buf, global_event_pool.gralloc_buf_pool);
 	evdi_inflight_req_put(req);
 	return ret;
 }

@@ -115,7 +115,6 @@ struct evdi_event_pool {
 	struct kmem_cache *cache;
 	struct kmem_cache *drm_cache;
 	struct kmem_cache *inflight_cache;
-	mempool_t *gralloc_buf_pool;
 	mempool_t *inflight_pool;
 	mempool_t *gralloc_data_pool;
 	atomic_t allocated;
@@ -238,13 +237,7 @@ struct evdi_device {
 	struct idr inflight_idr;
 	spinlock_t inflight_lock;
 #endif
-	struct evdi_percpu_gralloc __percpu	*percpu_gralloc_buf;
 	struct evdi_percpu_inflight __percpu	*percpu_inflight;
-};
-
-struct evdi_percpu_gralloc {
-	struct evdi_gralloc_buf_user	buf;
-	atomic_t			in_use;
 };
 
 struct evdi_percpu_inflight {
@@ -425,8 +418,6 @@ struct evdi_perf_counters {
 	atomic64_t pool_alloc_slow;
 	atomic64_t wakeup_count;
 	atomic64_t poll_cycles;
-	atomic64_t drm_events_sent;
-	atomic64_t drm_events_dropped;
 	atomic64_t inflight_cache_hits;
 	atomic64_t callback_completions;
 	atomic64_t event_freelist_pop_hits;
