@@ -21,6 +21,28 @@ struct evdi_gralloc_buf_stack {
 	int installed_fds[EVDI_MAX_FDS];
 };
 
+static inline int evdi_get_unused_fds_batch(int n, int flags, int *fds)
+{
+	int i, fd, ret = 0;
+
+	if (!fds || n <= 0)
+		return ret;
+
+	for (i = 0; i < n; i++)
+		fds[i] = -1;
+
+	for (i = 0; i < n; i++) {
+		fd = get_unused_fd_flags(flags);
+		if (unlikely(fd < 0)) {
+			ret = fd;
+			break;
+		}
+		fds[i] = fd;
+	}
+
+	return ret;
+}
+
 static int evdi_process_gralloc_buffer(struct evdi_inflight_req *req,
 					int *installed_fds,
 					struct evdi_gralloc_buf_user *gralloc_buf)
@@ -41,16 +63,16 @@ static int evdi_process_gralloc_buffer(struct evdi_inflight_req *req,
 		       sizeof(int) * gralloc_buf->numInts);
 	}
 
-	for (i = 0; i < gralloc_buf->numFds; i++) {
-		fd_tmp = get_unused_fd_flags(O_RDWR);
-		if (fd_tmp < 0) {
-			while (--i >= 0)
+	fd_tmp = evdi_get_unused_fds_batch(gralloc_buf->numFds, O_RDWR, installed_fds);
+	if (unlikely(fd_tmp < 0)) {
+		for (i = 0; i < gralloc_buf->numFds; i++) {
+			if (installed_fds[i] >= 0)
 				put_unused_fd(installed_fds[i]);
-			return fd_tmp;
 		}
-		installed_fds[i] = fd_tmp;
-		gralloc_buf->data[i] = fd_tmp;
+		return fd_tmp;
 	}
+	for (i = 0; i < gralloc_buf->numFds; i++)
+		gralloc_buf->data[i] = installed_fds[i];
 
 	return 0;
 }
