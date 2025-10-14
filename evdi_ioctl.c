@@ -676,69 +676,64 @@ int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_
 //		evdi_warn("get_buff_callback: poll_id %d owned by different file", cb->poll_id);
 
 	if (cb->numFds < 0 || cb->numInts < 0 ||
-	    cb->numFds > EVDI_MAX_FDS || cb->numInts > EVDI_MAX_INTS) {
-		gralloc = mempool_alloc(global_event_pool.gralloc_data_pool, GFP_KERNEL);
-		if (gralloc) {
-			gralloc->version = cb->version;
-			gralloc->numFds = 0;
-			gralloc->numInts = 0;
-			req->reply.get_buf.gralloc_buf.gralloc = gralloc;
-		}
+	    cb->numFds > EVDI_MAX_FDS || cb->numInts > EVDI_MAX_INTS)
 		goto out_complete;
-	}
 
 	nfd = cb->numFds;
 	nint = cb->numInts;
 
-	gralloc = mempool_alloc(global_event_pool.gralloc_data_pool, GFP_KERNEL);
-	if (!gralloc)
-		goto out_complete;
+	{
+		size_t ints_bytes = nint > 0 ? sizeof(int) * nint : 0;
+		size_t files_bytes = nfd > 0 ? sizeof(struct file *) * nfd : 0;
+		size_t total = sizeof(*gralloc) + ints_bytes + files_bytes;
+		void *blk = kvzalloc(total, GFP_KERNEL);
+		char *p;
 
-	gralloc->version = cb->version;
-	gralloc->numFds = 0;
-	gralloc->numInts = 0;
-	req->reply.get_buf.gralloc_buf.gralloc = gralloc;
-
-	if (nint) {
-		gralloc->data_ints =
-			kvcalloc(nint, sizeof(int), GFP_KERNEL);
-		if (!gralloc->data_ints)
+		if (!blk)
 			goto out_complete;
 
-		if (evdi_copy_from_user_allow_partial(gralloc->data_ints,
-						      cb->data_ints,
-						      sizeof(int) * nint)) {
-			goto out_complete;
-		}
-	gralloc->numInts = nint;
-	}
+		gralloc = (struct evdi_gralloc_data *)blk;
+		p = (char *)(gralloc + 1);
+		gralloc->data_ints = nint ? (int *)p : NULL;
+		p += ints_bytes;
+		gralloc->data_files = nfd ? (struct file **)p : NULL;
+		atomic_set(&gralloc->is_kvblock, 1);
+		gralloc->version = cb->version;
+		gralloc->numFds = 0;
+		gralloc->numInts = 0;
 
-	if (nfd) {
-		gralloc->data_files =
-			kvcalloc(nfd, sizeof(struct file *), GFP_KERNEL);
-		if (!gralloc->data_files)
-			goto out_complete;
-
-		if (evdi_copy_from_user_allow_partial(fds_local, cb->fd_ints,
-						      sizeof(int) * nfd)) {
-			goto out_complete;
-		}
-
-		for (i = 0; i < nfd; i++) {
-			gralloc->data_files[i] = fget(fds_local[i]);
-			if (!gralloc->data_files[i]) {
-				for (j = 0; j < i; j++) {
-					if (gralloc->data_files[j]) {
-						fput(gralloc->data_files[j]);
-						gralloc->data_files[j] = NULL;
-					}
-				}
-				evdi_err("evdi_ioctl_get_buff_callback: Failed to fget fd %d\n",
-					 fds_local[i]);
+		if (nint) {
+			if (evdi_copy_from_user_allow_partial(gralloc->data_ints,
+							      cb->data_ints,
+							      sizeof(int) * nint)) {
+				kvfree(blk);
 				goto out_complete;
 			}
+			gralloc->numInts = nint;
 		}
-		gralloc->numFds = nfd;
+
+		if (nfd) {
+			if (evdi_copy_from_user_allow_partial(fds_local, cb->fd_ints,
+							      sizeof(int) * nfd)) {
+				kvfree(blk);
+				goto out_complete;
+			}
+			for (i = 0; i < nfd; i++) {
+				gralloc->data_files[i] = fget(fds_local[i]);
+				if (!gralloc->data_files[i]) {
+					for (j = 0; j < i; j++) {
+						if (gralloc->data_files[j]) {
+							fput(gralloc->data_files[j]);
+							gralloc->data_files[j] = NULL;
+						}
+					}
+					kvfree(blk);
+					goto out_complete;
+				}
+			}
+			gralloc->numFds = nfd;
+		}
+		req->reply.get_buf.gralloc_buf.gralloc = gralloc;
 	}
 
 out_complete:

@@ -168,6 +168,7 @@ struct evdi_gralloc_data {
 	int numInts;
 	struct file **data_files;
 	int *data_ints;
+	atomic_t is_kvblock;
 };
 
 struct evdi_gem_object {
