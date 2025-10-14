@@ -71,8 +71,10 @@ static int evdi_process_gralloc_buffer(struct evdi_inflight_req *req,
 		}
 		return fd_tmp;
 	}
-	for (i = 0; i < gralloc_buf->numFds; i++)
+	for (i = 0; i < gralloc_buf->numFds; i++) {
+		prefetchw(&gralloc_buf->data[i]);
 		gralloc_buf->data[i] = installed_fds[i];
+	}
 
 	return 0;
 }
@@ -576,6 +578,9 @@ int evdi_ioctl_gbm_get_buff(struct drm_device *dev, void *data, struct drm_file 
 
 	gralloc = req->reply.get_buf.gralloc_buf.gralloc;
 	copy_size = sizeof(int) * (3 + gralloc_buf->numFds + gralloc_buf->numInts);
+	if (gralloc)
+		prefetch(gralloc);
+
 	if (evdi_copy_to_user_allow_partial(cmd->native_handle, gralloc_buf, copy_size)) {
 		for (i = 0; i < gralloc_buf->numFds; i++)
 			put_unused_fd(stack_buf.installed_fds[i]);

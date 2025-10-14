@@ -18,7 +18,7 @@ struct evdi_perf_counters evdi_perf;
 struct evdi_pcpu_event_freelist {
 	struct llist_head free;
 	atomic_t free_count;
-};
+} ____cacheline_aligned_in_smp;
 
 static struct evdi_pcpu_event_freelist __percpu *evdi_pcpu_event_freelist;
 
@@ -36,6 +36,8 @@ static struct evdi_event *evdi_pcpu_event_pop(void)
 		return NULL;
 
 	atomic_dec(&pc->free_count);
+	prefetch(llist_entry(node, struct evdi_event, llist));
+
 	return llist_entry(node, struct evdi_event, llist);
 }
 
@@ -506,6 +508,7 @@ struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi)
 
 
 	event = llist_entry(node, struct evdi_event, llist);
+	prefetch(event->data);
 	atomic_dec(&evdi->events.queue_size);
 	atomic64_inc(&evdi->events.events_dequeued);
 	atomic64_inc(&evdi_perf.event_dequeue_ops);
