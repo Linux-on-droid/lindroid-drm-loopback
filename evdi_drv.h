@@ -102,6 +102,10 @@
 #define EVDI_INFLIGHT_POOL_MIN 64
 #define EVDI_GRALLOC_DATA_POOL_MIN 32
 
+#define EVDI_SMALL_PAYLOAD_MAX 64
+#define EVDI_SMALL_POOL_MIN 256
+#define EVDI_PCPU_SMALL_FREE_MAX 256
+
 struct evdi_device;
 
 struct evdi_gralloc_buf_user {
@@ -135,6 +139,7 @@ struct evdi_event {
 	struct llist_node llist;
 	struct evdi_device *evdi;
 	atomic_t freed;
+	u8 payload_type;	
 };
 
 struct evdi_inflight_req {
@@ -305,6 +310,8 @@ void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file);
 int evdi_event_wait(struct evdi_device *evdi, struct drm_file *file);
 struct evdi_inflight_req;
 struct evdi_inflight_req *evdi_inflight_req_alloc(void);
+void *evdi_small_payload_alloc(gfp_t gfp);
+void evdi_small_payload_free(void *ptr);
 
 /* evdi_gem.c */
 struct evdi_gem_object *evdi_gem_alloc_object(struct drm_device *dev, size_t size);
@@ -424,6 +431,9 @@ struct evdi_perf_counters {
 	atomic64_t event_freelist_pop_hits;
 	atomic64_t event_freelist_pop_misses;
 	atomic64_t event_freelist_pushes;
+	atomic64_t event_payload_small_allocs;
+	atomic64_t event_payload_heap_allocs;
+	atomic64_t event_payload_none_allocs;
 	atomic64_t inflight_percpu_hits;
 	atomic64_t inflight_percpu_misses;
 };
