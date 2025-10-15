@@ -10,6 +10,9 @@
 #include <linux/platform_device.h>
 #include <linux/idr.h>
 
+extern bool evdi_perf_on;
+extern struct static_key_false evdi_perf_key;
+
 static struct device *evdi_sysfs_dev;
 static DEFINE_IDA(evdi_pdev_ida);
 
@@ -86,6 +89,36 @@ static struct device_attribute dev_attr_add_0666 = {
 	.store = add_store,
 };
 
+static ssize_t enable_perf_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", evdi_perf_on ? 1 : 0);
+}
+
+static ssize_t enable_perf_store(struct device *dev, struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	int val, ret;
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	if (val) {
+		if (!evdi_perf_on) {
+			evdi_perf_on = true;
+			static_branch_enable(&evdi_perf_key);
+		}
+	} else {
+		if (evdi_perf_on) {
+			evdi_perf_on = false;
+			static_branch_disable(&evdi_perf_key);
+		}
+	}
+	return count;
+}
+
+static DEVICE_ATTR_RW(enable_perf);
+
 static struct attribute *evdi_sysfs_attrs[] = {
 	NULL,
 };
@@ -151,6 +184,7 @@ static DEVICE_ATTR_RO(stats);
 
 static struct attribute *evdi_debug_attrs[] = {
 	&dev_attr_stats.attr,
+	&dev_attr_enable_perf.attr,
 	NULL,
 };
 

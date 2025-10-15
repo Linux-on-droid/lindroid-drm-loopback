@@ -164,7 +164,7 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 				atomic_set(&req->from_percpu, 1);
 				req->percpu_slot = (u8)i;
 				req->reply.get_buf.gralloc_buf.gralloc = NULL;
-				atomic64_inc(&evdi_perf.inflight_percpu_hits);
+				EVDI_PERF_INC64(&evdi_perf.inflight_percpu_hits);
 				break;
 			}
 		}
@@ -175,7 +175,7 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 	if (!from_percpu) {
 		req = evdi_inflight_req_alloc();
 		if (likely(req))
-			atomic64_inc(&evdi_perf.inflight_percpu_misses);
+			EVDI_PERF_INC64(&evdi_perf.inflight_percpu_misses);
 	}
 
 	if (unlikely(!req))
@@ -384,11 +384,11 @@ static int evdi_queue_create_event_with_id(struct evdi_device *evdi,
 		return -ENOMEM;
 	}
 	if (sizeof(*params) == 0) {
-		atomic64_inc(&evdi_perf.event_payload_none_allocs);
+		EVDI_PERF_INC64(&evdi_perf.event_payload_none_allocs);
 	} else if (small) {
-		atomic64_inc(&evdi_perf.event_payload_small_allocs);
+		EVDI_PERF_INC64(&evdi_perf.event_payload_small_allocs);
 	} else {
-		atomic64_inc(&evdi_perf.event_payload_heap_allocs);
+		EVDI_PERF_INC64(&evdi_perf.event_payload_heap_allocs);
 	}
 	event->payload_type = small ? 1 : 2;
 
@@ -429,11 +429,11 @@ static int evdi_queue_struct_event_with_id(struct evdi_device *evdi,
 		return -ENOMEM;
 	}
 	if (sizeof(*params) == 0) {
-		atomic64_inc(&evdi_perf.event_payload_none_allocs);
+		EVDI_PERF_INC64(&evdi_perf.event_payload_none_allocs);
 	} else if (small) {
-		atomic64_inc(&evdi_perf.event_payload_small_allocs);
+		EVDI_PERF_INC64(&evdi_perf.event_payload_small_allocs);
 	} else {
-		atomic64_inc(&evdi_perf.event_payload_heap_allocs);
+		EVDI_PERF_INC64(&evdi_perf.event_payload_heap_allocs);
 	}
 	event->payload_type = small ? 1 : 2;
 
@@ -465,7 +465,7 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 	struct evdi_device *evdi = dev->dev_private;
 	struct drm_evdi_connect *cmd = data;
 
-	atomic64_inc(&evdi_perf.ioctl_calls[0]);
+	EVDI_PERF_INC64(&evdi_perf.ioctl_calls[0]);
 
 	if (!cmd->connected) {
 		evdi_flush_work(evdi);
@@ -525,7 +525,7 @@ int evdi_ioctl_poll(struct drm_device *dev, void *data, struct drm_file *file)
 	struct evdi_event *event;
 	int ret;
 
-	atomic64_inc(&evdi_perf.ioctl_calls[1]);
+	EVDI_PERF_INC64(&evdi_perf.ioctl_calls[1]);
 
 	event = evdi_event_dequeue(evdi);
 	if (likely(event)) {
@@ -577,7 +577,7 @@ int evdi_ioctl_gbm_get_buff(struct drm_device *dev, void *data, struct drm_file 
 	long ret;
 	int i, copy_size;
 
-	atomic64_inc(&evdi_perf.ioctl_calls[7]);
+	EVDI_PERF_INC64(&evdi_perf.ioctl_calls[7]);
 
 	req = evdi_inflight_alloc(evdi, file, get_buf, &poll_id);
 	if (!req)
@@ -731,7 +731,7 @@ int evdi_ioctl_get_buff_callback(struct drm_device *dev, void *data, struct drm_
 	int i, j, nfd, nint;
 	int fds_local[EVDI_MAX_FDS];
 
-	atomic64_inc(&evdi_perf.ioctl_calls[3]);
+	EVDI_PERF_INC64(&evdi_perf.ioctl_calls[3]);
 
 	req = evdi_inflight_take(evdi, cb->poll_id);
 	if (!req)
@@ -815,8 +815,8 @@ int evdi_ioctl_destroy_buff_callback(struct drm_device *dev, void *data, struct 
 {
 	struct evdi_device *evdi = dev->dev_private;
 
-	atomic64_inc(&evdi_perf.ioctl_calls[4]);
-	atomic64_inc(&evdi_perf.callback_completions);
+	EVDI_PERF_INC64(&evdi_perf.ioctl_calls[4]);
+	EVDI_PERF_INC64(&evdi_perf.callback_completions);
 
 	wake_up_interruptible(&evdi->events.wait_queue);
 
@@ -827,8 +827,8 @@ int evdi_ioctl_swap_callback(struct drm_device *dev, void *data, struct drm_file
 {
 	struct evdi_device *evdi = dev->dev_private;
 
-	atomic64_inc(&evdi_perf.ioctl_calls[5]);
-	atomic64_inc(&evdi_perf.callback_completions);
+	EVDI_PERF_INC64(&evdi_perf.ioctl_calls[5]);
+	EVDI_PERF_INC64(&evdi_perf.callback_completions);
 
 	wake_up_interruptible(&evdi->events.wait_queue);
 
@@ -841,7 +841,7 @@ int evdi_ioctl_create_buff_callback(struct drm_device *dev, void *data, struct d
 	struct drm_evdi_create_buff_callabck *cb = data;
 	struct evdi_inflight_req *req;
 
-	atomic64_inc(&evdi_perf.ioctl_calls[6]);
+	EVDI_PERF_INC64(&evdi_perf.ioctl_calls[6]);
 
 	req = evdi_inflight_take(evdi, cb->poll_id);
 	if (req) {
@@ -902,9 +902,9 @@ static int evdi_queue_int_event(struct evdi_device *evdi,
 		return -ENOMEM;
 	}
 	if (small)
-		atomic64_inc(&evdi_perf.event_payload_small_allocs);
+		EVDI_PERF_INC64(&evdi_perf.event_payload_small_allocs);
 	else
-		atomic64_inc(&evdi_perf.event_payload_heap_allocs);
+		EVDI_PERF_INC64(&evdi_perf.event_payload_heap_allocs);
 
 	event->payload_type = small ? 1 : 2;
 

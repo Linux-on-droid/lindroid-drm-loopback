@@ -21,6 +21,7 @@
 #include <linux/llist.h>
 #include <linux/file.h>
 #include <linux/mempool.h>
+#include <linux/jump_label.h>
 
 #if KERNEL_VERSION(5, 5, 0) <= LINUX_VERSION_CODE
 #include <drm/drm_drv.h>
@@ -418,6 +419,12 @@ static __always_inline void evdi_smp_mb(void)
 	pr_err("[evdi-lindroid] " fmt "\n", ##__VA_ARGS__)
 
 /* Performance counters for monitoring */
+DECLARE_STATIC_KEY_FALSE(evdi_perf_key);
+extern bool evdi_perf_on;
+#define EVDI_PERF_ENABLED() static_branch_unlikely(&evdi_perf_key)
+#define EVDI_PERF_INC64(p)	do { if (EVDI_PERF_ENABLED()) atomic64_inc((p)); } while (0)
+#define EVDI_PERF_ADD64(p,v)	do { if (EVDI_PERF_ENABLED()) atomic64_add((v),(p)); } while (0)
+
 struct evdi_perf_counters {
 	atomic64_t ioctl_calls[16];
 	atomic64_t event_queue_ops;
