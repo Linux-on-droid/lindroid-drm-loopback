@@ -543,21 +543,25 @@ void evdi_event_free(struct evdi_event *event)
 
 static inline bool evdi_event_queue_lockfree(struct evdi_device *evdi, struct evdi_event *event)
 {
+	bool was_empty = false;
+
 	if (unlikely(atomic_read_acquire(&evdi->events.cleanup_in_progress)))
 		return false;
 
 	if (unlikely(atomic_read_acquire(&evdi->events.stopping)))
 		return false;
 
-	llist_add(&event->llist, &evdi->events.lockfree_head);
-	
+	prefetchw(&event->llist);
+	was_empty = llist_add(&event->llist, &evdi->events.lockfree_head);
+
 	atomic_inc(&evdi->events.queue_size);
 	atomic64_inc(&evdi->events.events_queued);
 	EVDI_PERF_INC64(&evdi_perf.event_queue_ops);
 	
 	evdi_smp_wmb();
 
-	if (atomic_cmpxchg(&evdi->events.wake_pending, 0, 1) == 0) {
+	if (atomic_cmpxchg(&evdi->events.wake_pending, 0, 1) == 0 &&
+			was_empty) {
 		wake_up_interruptible(&evdi->events.wait_queue);
 		EVDI_PERF_INC64(&evdi_perf.wakeup_count);
 	}
