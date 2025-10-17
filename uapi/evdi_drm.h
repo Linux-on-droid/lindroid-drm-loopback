@@ -29,6 +29,7 @@ struct drm_evdi_connect {
 	uint32_t width;
 	uint32_t height;
 	uint32_t refresh_rate;
+	uint32_t display_id;
 };
 
 struct drm_evdi_poll {

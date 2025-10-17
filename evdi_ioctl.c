@@ -470,13 +470,19 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 	EVDI_PERF_INC64(&evdi_perf.ioctl_calls[0]);
 
 	if (!cmd->connected) {
+		if (cmd->display_id >= LINDROID_MAX_CONNECTORS)
+			return -EINVAL;
 		evdi_flush_work(evdi);
-
 		mutex_lock(&evdi->config_mutex);
-		evdi->connected = false;
+		evdi->displays[cmd->display_id].connected = false;
 		mutex_unlock(&evdi->config_mutex);
-
-		WRITE_ONCE(evdi->drm_client, NULL);
+		{
+			int i, any = 0;
+			for (i = 0; i < LINDROID_MAX_CONNECTORS; i++)
+				any |= evdi->displays[i].connected;
+			if (!any)
+				WRITE_ONCE(evdi->drm_client, NULL);
+		}
 		evdi_smp_wmb();
 
 		evdi_info("Device %d disconnected", evdi->dev_index);
@@ -495,20 +501,21 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 		wake_up_interruptible(&evdi->events.wait_queue);
 	}
 
+	if (cmd->display_id >= LINDROID_MAX_CONNECTORS)
+		return -EINVAL;
+
 	mutex_lock(&evdi->config_mutex);
-	evdi->connected = true;
-	evdi->width = cmd->width;
-	evdi->height = cmd->height;
-	evdi->refresh_rate = cmd->refresh_rate;
+	evdi->displays[cmd->display_id].connected = true;
+	evdi->displays[cmd->display_id].width = cmd->width;
+	evdi->displays[cmd->display_id].height = cmd->height;
+	evdi->displays[cmd->display_id].refresh_rate = cmd->refresh_rate;
 	mutex_unlock(&evdi->config_mutex);
 
 	evdi_smp_wmb();
 	WRITE_ONCE(evdi->drm_client, file);
 
-	evdi_smp_wmb();
-
-	evdi_info("Device %d connected: %ux%u@%uHz",
-		 evdi->dev_index, cmd->width, cmd->height, cmd->refresh_rate);
+	evdi_info("Device %d connected: %ux%u@%uHz id:%u",
+		  evdi->dev_index, cmd->width, cmd->height, cmd->refresh_rate, cmd->display_id);
 
 	atomic_set(&evdi->events.stopping, 0);
 
@@ -914,6 +921,25 @@ static int evdi_queue_int_event(struct evdi_device *evdi,
 	return 0;
 }
 
+int evdi_queue_swap_event(struct evdi_device *evdi,
+	int id, int display_id, struct drm_file *owner)
+{
+	struct evdi_event *event;
+	struct evdi_swap data = {
+		.id		= id,
+		.display_id	= display_id,
+	};
+
+	event = evdi_event_alloc(evdi, swap_to,
+				 atomic_inc_return(&evdi->events.next_poll_id),
+				 &data, sizeof(data), owner);
+	if (!event)
+		return -ENOMEM;
+
+	evdi_event_queue(evdi, event);
+	return 0;
+}
+
 int evdi_queue_add_buf_event(struct evdi_device *evdi, int fd_data, struct drm_file *owner)
 {
 	return evdi_queue_int_event(evdi, add_buf, fd_data, owner);
@@ -922,11 +948,6 @@ int evdi_queue_add_buf_event(struct evdi_device *evdi, int fd_data, struct drm_f
 int evdi_queue_get_buf_event(struct evdi_device *evdi, int id, struct drm_file *owner)
 {
 	return evdi_queue_int_event(evdi, get_buf, id, owner);
-}
-
-int evdi_queue_swap_event(struct evdi_device *evdi, int id, struct drm_file *owner)
-{
-	return evdi_queue_int_event(evdi, swap_to, id, owner);
 }
 
 int evdi_queue_destroy_event(struct evdi_device *evdi, int id, struct drm_file *owner)
