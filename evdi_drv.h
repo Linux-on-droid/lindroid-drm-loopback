@@ -102,6 +102,8 @@
 #define EVDI_INFLIGHT_POOL_MIN 64
 #define EVDI_GRALLOC_DATA_POOL_MIN 32
 
+#define LINDROID_MAX_CONNECTORS 5
+
 struct evdi_device;
 
 struct evdi_gralloc_buf_user {
@@ -186,18 +188,26 @@ struct evdi_gem_object {
 
 #define to_evdi_bo(x) container_of(x, struct evdi_gem_object, base)
 
-struct evdi_device {
-	struct drm_device *ddev;
-	struct drm_connector *connector;
-	struct drm_encoder *encoder;
-	struct drm_simple_display_pipe pipe;
+struct evdi_swap {
+	int id;
+	int display_id;
+};
 
-	int dev_index;
-
+struct evdi_display {
 	bool connected;
 	uint32_t width;
 	uint32_t height;
 	uint32_t refresh_rate;
+};
+
+struct evdi_device {
+	struct drm_device *ddev;
+	struct drm_connector *connector[LINDROID_MAX_CONNECTORS];
+	struct drm_simple_display_pipe pipe[LINDROID_MAX_CONNECTORS];
+
+	int dev_index;
+
+	struct evdi_display displays[LINDROID_MAX_CONNECTORS];
 
 	struct drm_file *drm_client;
 
@@ -292,7 +302,7 @@ void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owne
 int evdi_ioctl_request_update(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_ioctl_gbm_get_buff(struct drm_device *dev, void *data, struct drm_file *file);
 int evdi_ioctl_gbm_del_buff(struct drm_device *dev, void *data, struct drm_file *file);
-int evdi_queue_swap_event(struct evdi_device *evdi, int id, struct drm_file *owner);
+int evdi_queue_swap_event(struct evdi_device *evdi, int id, int display_id, struct drm_file *owner);
 int evdi_queue_destroy_event(struct evdi_device *evdi, int id, struct drm_file *owner);
 
 /* evdi_event.c */
@@ -352,9 +362,9 @@ struct evdi_framebuffer {
 };
 
 /* Helpers */
-static __always_inline bool evdi_likely_connected(struct evdi_device *evdi)
+static __always_inline bool evdi_likely_connected(struct evdi_device *evdi, int id)
 {
-	return likely(evdi->connected);
+	return likely(evdi->displays[id].connected);
 }
 
 static __always_inline bool evdi_likely_not_stopping(struct evdi_device *evdi)

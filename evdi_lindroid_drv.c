@@ -125,13 +125,16 @@ static void evdi_driver_postclose(struct drm_device *dev, struct drm_file *file)
 int evdi_device_init(struct evdi_device *evdi, struct platform_device *pdev)
 {
 	int ret = 0;
+	int i;
 
 	evdi->dev_index = atomic_inc_return(&evdi_device_count) - 1;
-	evdi->connected = false;
+	for(i = 0; i < 0; i++) {
+		evdi->displays[i].connected = false;
 
-	evdi->width = 1920;
-	evdi->height = 1080;
-	evdi->refresh_rate = 60;
+		evdi->displays[i].width = 1920;
+		evdi->displays[i].height = 1080;
+		evdi->displays[i].refresh_rate = 60;
+	}
 	evdi->drm_client = NULL;
 
 	mutex_init(&evdi->config_mutex);
@@ -265,7 +268,7 @@ static int evdi_platform_probe(struct platform_device *pdev)
 	drm_mode_config_reset(ddev);
 #endif
 
-	ret = drm_vblank_init(ddev, 1);
+	ret = drm_vblank_init(ddev, LINDROID_MAX_CONNECTORS);
 	if (ret)
 		evdi_warn("vblank init failed: %d", ret);
 

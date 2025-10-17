@@ -62,7 +62,7 @@ static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 	efb = to_evdi_fb(fb);
 
 	if (efb && efb->owner && efb->gralloc_buf_id)
-		evdi_queue_swap_event(evdi, efb->gralloc_buf_id, efb->owner);
+		evdi_queue_swap_event(evdi, efb->gralloc_buf_id, evdi_connector_slot(evdi, pipe->connector), efb->owner);
 
 	if (unlikely(!READ_ONCE(evdi->drm_client)))
 		return;
@@ -77,7 +77,7 @@ static const struct drm_simple_display_pipe_funcs evdi_pipe_funcs = {
 int evdi_modeset_init(struct drm_device *dev)
 {
 	struct evdi_device *evdi = dev->dev_private;
-	int ret;
+	int ret, i;
 
 	ret = drm_mode_config_init(dev);
 	if (ret) {
@@ -100,13 +100,14 @@ int evdi_modeset_init(struct drm_device *dev)
 		evdi_err("Failed to initialize connector: %d", ret);
 		goto err_connector;
 	}
-
-	ret = drm_simple_display_pipe_init(dev, &evdi->pipe, &evdi_pipe_funcs,
-					   evdi_formats, ARRAY_SIZE(evdi_formats),
-					   NULL, evdi->connector);
-	if (ret) {
-		evdi_err("Failed to initialize simple display pipe: %d", ret);
-		goto err_pipe;
+	for(i = 0; i < LINDROID_MAX_CONNECTORS; i++) {
+		ret = drm_simple_display_pipe_init(dev, &evdi->pipe[i], &evdi_pipe_funcs,
+						evdi_formats, ARRAY_SIZE(evdi_formats),
+						NULL, evdi->connector[i]);
+		if (ret) {
+			evdi_err("Failed to initialize simple display pipe: %d", ret);
+			goto err_pipe;
+		}
 	}
 
 	evdi_info("Modeset initialized for device %d", evdi->dev_index);
