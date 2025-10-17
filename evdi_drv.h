@@ -310,7 +310,7 @@ struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi);
 void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file);
 int evdi_event_wait(struct evdi_device *evdi, struct drm_file *file);
 struct evdi_inflight_req;
-struct evdi_inflight_req *evdi_inflight_req_alloc(void);
+struct evdi_inflight_req *evdi_inflight_req_alloc(struct evdi_device *evdi);
 void *evdi_small_payload_alloc(gfp_t gfp);
 void evdi_small_payload_free(void *ptr);
 

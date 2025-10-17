@@ -153,6 +153,8 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 
 	percpu_req = get_cpu_ptr(evdi->percpu_inflight);
 	if (likely(percpu_req)) {
+		prefetchw(&percpu_req->req[0]);
+		prefetchw(&percpu_req->req[1]);
 		for (i = 0; i < 2; i++) {
 			if (atomic_cmpxchg(&percpu_req->in_use[i], 0, 1) == 0) {
 				req = &percpu_req->req[i];
@@ -173,7 +175,7 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 
 	// fallback to mempool
 	if (!from_percpu) {
-		req = evdi_inflight_req_alloc();
+		req = evdi_inflight_req_alloc(evdi);
 		if (likely(req))
 			EVDI_PERF_INC64(&evdi_perf.inflight_percpu_misses);
 	}

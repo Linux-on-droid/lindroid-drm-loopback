@@ -38,6 +38,8 @@ struct evdi_pcpu_small_freelist {
 static struct evdi_pcpu_small_freelist __percpu *evdi_pcpu_small_freelist;
 static mempool_t *evdi_small_payload_pool;
 
+static DEFINE_PER_CPU(int, evdi_inflight_last_slot);
+
 static inline struct evdi_small_payload *evdi_small_from_data(void *p)
 {
 	return container_of(p, struct evdi_small_payload, data);
@@ -469,21 +471,53 @@ static void evdi_inflight_req_release(struct kref *kref)
 	atomic_dec(&global_event_pool.inflight_allocated);
 }
 
-struct evdi_inflight_req *evdi_inflight_req_alloc(void)
+struct evdi_inflight_req *evdi_inflight_req_alloc(struct evdi_device *evdi)
 {
-	struct evdi_inflight_req *req;
+	struct evdi_inflight_req *req = NULL;
+	bool from_percpu = false;
+	int sel_slot = -1;
+	struct evdi_percpu_inflight *pc;
+	int start, i;
 
-	req = mempool_alloc(global_event_pool.inflight_pool, GFP_ATOMIC);
-	if (likely(req)) {
-		memset(req, 0, sizeof(*req));
-		atomic_inc(&global_event_pool.inflight_allocated);
-		EVDI_PERF_INC64(&evdi_perf.inflight_cache_hits);
-		kref_init(&req->refcount);
-		init_completion(&req->done);
-		atomic_set(&req->from_percpu, 0);
-		atomic_set(&req->freed, 0);
-		req->reply.get_buf.gralloc_buf.gralloc = NULL;
+	if (likely(evdi && evdi->percpu_inflight)) {
+		pc = get_cpu_ptr(evdi->percpu_inflight);
+		start = this_cpu_read(evdi_inflight_last_slot) & 1;
+
+		prefetchw(&pc->req[0]);
+		prefetchw(&pc->req[1]);
+		for (i = 0; i < 2; i++) {
+			int s = (start + i) & 1;
+			if (atomic_cmpxchg(&pc->in_use[s], 0, 1) == 0) {
+				this_cpu_write(evdi_inflight_last_slot, s);
+				req = &pc->req[s];
+				from_percpu = true;
+				sel_slot = s;
+				break;
+			}
+		}
+		put_cpu_ptr(evdi->percpu_inflight);
 	}
+
+	if (unlikely(!req)) {
+		req = mempool_alloc(global_event_pool.inflight_pool, GFP_ATOMIC);
+		if (unlikely(!req))
+			return NULL;
+	}
+
+	memset(req, 0, sizeof(*req));
+	kref_init(&req->refcount);
+	init_completion(&req->done);
+	if (from_percpu) {
+		atomic_set(&req->from_percpu, 1);
+		req->percpu_slot = sel_slot;
+	} else {
+		atomic_set(&req->from_percpu, 0);
+		req->percpu_slot = -1;
+	}
+	atomic_set(&req->freed, 0);
+
+	atomic_inc(&global_event_pool.inflight_allocated);
+	EVDI_PERF_INC64(&evdi_perf.inflight_cache_hits);
 	return req;
 }
 
