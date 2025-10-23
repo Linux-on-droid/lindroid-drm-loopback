@@ -4,6 +4,7 @@
  */
 
 #include "evdi_drv.h"
+#include "uapi/evdi_drm.h"
 #include <linux/uaccess.h>
 #include <linux/file.h>
 #include <linux/fdtable.h>
@@ -376,7 +377,7 @@ static int evdi_queue_create_event_with_id(struct evdi_device *evdi,
 
 	event = evdi_event_alloc(evdi, create_buf,
 				 poll_id,
-				 data, sizeof(*params), owner);
+				 data, sizeof(*params), false, owner);
 	if (!event) {
 		if (small)
 			evdi_small_payload_free(data);
@@ -421,7 +422,7 @@ static int evdi_queue_struct_event_with_id(struct evdi_device *evdi,
 
 	memcpy(data, params, params_size);
 
-	event = evdi_event_alloc(evdi, type, poll_id, data, params_size, owner);
+	event = evdi_event_alloc(evdi, type, poll_id, data, params_size, false, owner);
 	if (!event) {
 		if (small)
 			evdi_small_payload_free(data);
@@ -900,7 +901,7 @@ static int evdi_queue_int_event(struct evdi_device *evdi,
 
 	event = evdi_event_alloc(evdi, type,
 				 atomic_inc_return(&evdi->events.next_poll_id),
-				 data, sizeof(int), owner);
+				 data, sizeof(int), false, owner);
 
 	if (!event) {
 		if (small)
@@ -932,7 +933,7 @@ int evdi_queue_swap_event(struct evdi_device *evdi,
 
 	event = evdi_event_alloc(evdi, swap_to,
 				 atomic_inc_return(&evdi->events.next_poll_id),
-				 &data, sizeof(data), owner);
+				 &data, sizeof(data), true, owner);
 	if (!event)
 		return -ENOMEM;
 

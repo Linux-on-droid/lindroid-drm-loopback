@@ -348,6 +348,7 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 				   int poll_id,
 				   void *data,
 				   size_t data_size,
+				   bool async,
 				   struct drm_file *owner)
 {
 	struct evdi_event *event;
@@ -380,7 +381,13 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 init_event:
 	event->type = type;
 	event->poll_id = poll_id;
-	event->data = data;
+	event->async = async;
+	if(async) {
+		event->data = kmalloc(data_size, GFP_KERNEL);
+		memcpy(event->data, data, data_size);
+	} else {
+		event->data = data;
+	}
 	event->data_size = data_size;
 	event->payload_type = 0;
 	event->next = NULL;
@@ -571,6 +578,9 @@ void evdi_event_free(struct evdi_event *event)
 
 	if (atomic_xchg(&event->freed, 1))
 		return;
+
+	if (event->async)
+		kfree(event->data);
 
 	call_rcu(&event->rcu, evdi_event_free_rcu);
 }

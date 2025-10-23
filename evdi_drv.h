@@ -142,7 +142,8 @@ struct evdi_event {
 	struct llist_node llist;
 	struct evdi_device *evdi;
 	atomic_t freed;
-	u8 payload_type;	
+	u8 payload_type;
+	bool async;
 };
 
 struct evdi_inflight_req {
@@ -313,6 +314,7 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 				   int poll_id,
 				   void *data,
 				   size_t data_size,
+				   bool async,
 				   struct drm_file *owner);
 void evdi_event_free(struct evdi_event *event);
 void evdi_event_queue(struct evdi_device *evdi, struct evdi_event *event);
