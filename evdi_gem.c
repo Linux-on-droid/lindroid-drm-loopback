@@ -353,18 +353,24 @@ int evdi_gem_vmap(struct evdi_gem_object *obj)
 				return -ENOMEM;
 
 #ifdef IOSYS_MAP_IS_IOMEM
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
 			obj->vmap_is_iomem = iosys_map_is_iomem(&map);
+#endif
 			obj->vmapping = obj->vmap_is_iomem ?
 				(void __force *)map.vaddr_iomem :
 				(void *)map.vaddr;
 #else
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
 			obj->vmap_is_iomem = map.is_iomem;
+#endif
 			obj->vmapping = map.vaddr;
 #endif
 		}
 #else
 		obj->vmapping = dma_buf_vmap(obj->base.import_attach->dmabuf);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
 		obj->vmap_is_iomem = false;
+#endif
 		if (!obj->vmapping)
 			return -ENOMEM;
 #endif
@@ -398,14 +404,18 @@ void evdi_gem_vunmap(struct evdi_gem_object *obj)
 		{
 			struct iosys_map map;
 #ifdef IOSYS_MAP_IS_IOMEM
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
 			if (obj->vmap_is_iomem)
 				iosys_map_set_vaddr_iomem(&map, (void __iomem *)obj->vmapping);
 			else
+#endif
 				iosys_map_set_vaddr(&map, obj->vmapping);
 #else
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
 			if (obj->vmap_is_iomem)
 				iosys_map_set_vaddr_iomem(&map, (void __iomem *)obj->vmapping);
 			else
+#endif
 				iosys_map_set_vaddr(&map, obj->vmapping);
 #endif
 			dma_buf_vunmap(obj->base.import_attach->dmabuf, &map);
@@ -413,7 +423,9 @@ void evdi_gem_vunmap(struct evdi_gem_object *obj)
 #else
 		dma_buf_vunmap(obj->base.import_attach->dmabuf, obj->vmapping);
 #endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
 		obj->vmap_is_iomem = false;
+#endif
 		obj->vmapping = NULL;
 		return;
 	}

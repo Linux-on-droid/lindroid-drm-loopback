@@ -653,10 +653,10 @@ int evdi_ioctl_gbm_create_buff(struct drm_device *dev, void *data, struct drm_fi
 
 	u_id = cmd->id;
 	u_stride = cmd->stride;
-	if (u_id && !access_ok(u_id, sizeof(*u_id)))
+	if (u_id && !evdi_access_ok_write(u_id, sizeof(*u_id)))
 		return -EFAULT;
 
-	if (u_stride && !access_ok(u_stride, sizeof(*u_stride)))
+	if (u_stride && !evdi_access_ok_write(u_stride, sizeof(*u_stride)))
 		return -EFAULT;
 
 	req = evdi_inflight_alloc(evdi, file, create_buf, &poll_id);
