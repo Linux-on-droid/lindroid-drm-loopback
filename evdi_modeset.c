@@ -77,8 +77,20 @@ static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 		return;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 19, 0)
+static void evdi_pipe_enable_compat(struct drm_simple_display_pipe *pipe,
+				    struct drm_crtc_state *crtc_state)
+{
+	evdi_pipe_enable(pipe, crtc_state, NULL);
+}
+#endif
+
 static const struct drm_simple_display_pipe_funcs evdi_pipe_funcs = {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 19, 0)
+	.enable 	= evdi_pipe_enable_compat,
+#else
 	.enable		= evdi_pipe_enable,
+#endif
 	.disable	= evdi_pipe_disable,
 	.update		= evdi_pipe_update,
 };
@@ -86,13 +98,18 @@ static const struct drm_simple_display_pipe_funcs evdi_pipe_funcs = {
 int evdi_modeset_init(struct drm_device *dev)
 {
 	struct evdi_device *evdi = dev->dev_private;
-	int ret, i;
+	int ret = 0;
+	int i;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)
 	ret = drm_mode_config_init(dev);
 	if (ret) {
 		evdi_err("Failed to initialize mode config: %d", ret);
 		return ret;
 	}
+#else
+	drm_mode_config_init(dev);
+#endif
 
 	dev->mode_config.min_width = 640;
 	dev->mode_config.min_height = 480;

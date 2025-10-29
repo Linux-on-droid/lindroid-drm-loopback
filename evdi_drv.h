@@ -30,6 +30,7 @@
 #include <linux/llist.h>
 #include <linux/file.h>
 #include <linux/mempool.h>
+#include <linux/uaccess.h>
 #include <linux/jump_label.h>
 
 #if KERNEL_VERSION(5, 5, 0) <= LINUX_VERSION_CODE
@@ -42,6 +43,7 @@
 #elif KERNEL_VERSION(4, 11, 0) <= LINUX_VERSION_CODE
 #include <drm/drm_drv.h>
 #include <drm/drmP.h>
+#include <drm/drm_gem.h>
 #else
 #include <drm/drmP.h>
 #endif
@@ -93,6 +95,27 @@
 
 #if KERNEL_VERSION(5, 15, 0) <= LINUX_VERSION_CODE
 #define EVDI_HAVE_XA_ALLOC_CYCLIC 1
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0)
+#ifndef drm_gem_object_put_unlocked
+#define drm_gem_object_put_unlocked drm_gem_object_unreference_unlocked
+#endif
+#ifndef drm_dev_put
+#define drm_dev_put drm_dev_unref
+#endif
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
+#ifndef evdi_access_ok_read
+#define evdi_access_ok_read(uaddr, size)  access_ok(VERIFY_READ,  (uaddr), (size))
+#define evdi_access_ok_write(uaddr, size) access_ok(VERIFY_WRITE, (uaddr), (size))
+#endif
+#else
+#ifndef evdi_access_ok_read
+#define evdi_access_ok_read(uaddr, size)  access_ok((uaddr), (size))
+#define evdi_access_ok_write(uaddr, size) access_ok((uaddr), (size))
+#endif
 #endif
 
 #include "uapi/evdi_drm.h"
