@@ -86,36 +86,6 @@ static int evdi_process_gralloc_buffer(struct evdi_inflight_req *req,
 	return 0;
 }
 
-//Handle short copies due to minor faults on big buffers
-static inline int evdi_prefault_readable(const void __user *uaddr, size_t len)
-{
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,15,0)
-	return fault_in_readable(uaddr, len);
-#else
-	unsigned long start = 0;
-	unsigned long end = 0;
-	unsigned long addr = 0;
-	unsigned char tmp;
-
-	if (unlikely(__get_user(tmp, (const unsigned char __user *)start)))
-		return -EFAULT;
-
-	addr = (start | (PAGE_SIZE - 1)) + 1;
-	while (addr <= (end & PAGE_MASK)) {
-		if (unlikely(__get_user(tmp, (const unsigned char __user *)addr)))
-			return -EFAULT;
-
-	addr += PAGE_SIZE;
-	}
-
-	if ((start & PAGE_MASK) != (end & PAGE_MASK)) {
-		if (unlikely(__get_user(tmp, (const unsigned char __user *)end)))
-			return -EFAULT;
-	}
-	return 0;
-#endif
-}
-
 //Allow partial progress; return -EFAULT only if zero progress
 static int evdi_copy_from_user_allow_partial(void *dst, const void __user *src, size_t len)
 {
@@ -124,7 +94,6 @@ static int evdi_copy_from_user_allow_partial(void *dst, const void __user *src, 
 	if (!len)
 		return 0;
 
-	(void)evdi_prefault_readable(src, len);
 	prefetchw(dst);
 	not = copy_from_user(dst, src, len);
 	if (not == len)
