@@ -209,7 +209,14 @@ int evdi_drm_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 #if KERNEL_VERSION(5, 11, 0) > LINUX_VERSION_CODE
 	vma->vm_ops = &evdi_gem_vm_ops;
 #endif
-
+#if defined(CONFIG_X86) || defined(CONFIG_ARM64)
+	{
+		struct drm_gem_object *gobj = vma->vm_private_data;
+		if (gobj && !evdi_drm_gem_object_use_import_attach(gobj)) {
+			vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
+		}
+	}
+#endif
 	return ret;
 }
 
