@@ -122,6 +122,19 @@ static void evdi_driver_postclose(struct drm_device *dev, struct drm_file *file)
 	evdi_debug("Device %d closed by process %d", evdi->dev_index, current->pid);
 }
 
+static enum hrtimer_restart evdi_vblank_timer_fn(struct hrtimer *t)
+{
+	struct evdi_vblank *v = container_of(t, struct evdi_vblank, timer);
+
+	if (!atomic_read(&v->enabled))
+		return HRTIMER_NORESTART;
+
+	drm_crtc_handle_vblank(v->crtc);
+
+	hrtimer_forward_now(&v->timer, v->period);
+	return HRTIMER_RESTART;
+}
+
 int evdi_device_init(struct evdi_device *evdi, struct platform_device *pdev)
 {
 	int ret = 0;
@@ -235,6 +248,7 @@ static int evdi_platform_probe(struct platform_device *pdev)
 	struct evdi_device *evdi;
 	struct drm_device *ddev;
 	int ret;
+	int i;
 
 	evdi = kzalloc(sizeof(*evdi), GFP_KERNEL);
 	if (!evdi)
@@ -273,6 +287,12 @@ static int evdi_platform_probe(struct platform_device *pdev)
 		evdi_warn("vblank init failed: %d", ret);
 
 	drm_kms_helper_poll_init(ddev);
+
+	for (i = 0; i < LINDROID_MAX_CONNECTORS; i++) {
+	hrtimer_init(&evdi->vblank[i].timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	evdi->vblank[i].timer.function = evdi_vblank_timer_fn;
+	atomic_set(&evdi->vblank[i].enabled, 0);
+}
 
 	ret = drm_dev_register(ddev, 0);
 	if (ret) {

@@ -56,7 +56,7 @@
 
 #include <drm/drm_simple_kms_helper.h>
 
-#if KERNEL_VERSION(5, 0, 0) <= LINUX_VERSION_CODE
+#if KERNEL_VERSION(5, 5, 0) <= LINUX_VERSION_CODE
 #include <linux/xarray.h>
 #define EVDI_HAVE_XARRAY 1
 #else
@@ -86,7 +86,6 @@
 #endif
 
 #include "uapi/evdi_drm.h"
-
 #define DRIVER_NAME "evdi-lindroid"
 #define DRIVER_DESC "Lindroid Virtual Display Interface"
 #define DRIVER_DATE   "NEVER"
@@ -200,6 +199,13 @@ struct evdi_display {
 	uint32_t refresh_rate;
 };
 
+struct evdi_vblank {
+	struct hrtimer timer;
+	ktime_t period;
+	atomic_t enabled;
+	struct drm_crtc *crtc;
+};
+
 struct evdi_device {
 	struct drm_device *ddev;
 	struct drm_connector *connector[LINDROID_MAX_CONNECTORS];
@@ -250,6 +256,7 @@ struct evdi_device {
 #endif
 	struct evdi_percpu_gralloc __percpu	*percpu_gralloc_buf;
 	struct evdi_percpu_inflight __percpu	*percpu_inflight;
+	struct evdi_vblank vblank[LINDROID_MAX_CONNECTORS];
 };
 
 struct evdi_percpu_gralloc {
