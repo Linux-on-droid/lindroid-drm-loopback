@@ -114,10 +114,66 @@ static const struct drm_connector_funcs evdi_connector_funcs = {
 	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
 };
 #else
+static int evdi_connector_dpms(struct drm_connector *connector, int mode)
+{
+	return 0;
+}
+
+static int evdi_connector_set_property(struct drm_connector *connector,
+				       struct drm_property *property,
+				       uint64_t val)
+{
+	return -EINVAL;
+}
+
+static void evdi_atomic_helper_connector_reset(struct drm_connector *connector)
+{
+	struct drm_connector_state *state;
+
+	if (connector->state) {
+		kfree(connector->state);
+		connector->state = NULL;
+	}
+
+	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	if (!state)
+		return;
+	state->connector = connector;
+	connector->state = state;
+}
+
+static struct drm_connector_state *
+evdi_atomic_helper_connector_duplicate_state(struct drm_connector *connector)
+{
+	struct drm_connector_state *state, *copy;
+
+	state = connector->state;
+	if (!state)
+		return NULL;
+
+	copy = kmemdup(state, sizeof(*state), GFP_KERNEL);
+	if (!copy)
+		return NULL;
+	copy->connector = connector;
+	return copy;
+}
+
+static void
+evdi_atomic_helper_connector_destroy_state(struct drm_connector *connector,
+					   struct drm_connector_state *state)
+{
+	kfree(state);
+}
+
 static const struct drm_connector_funcs evdi_connector_funcs = {
 	.detect = evdi_connector_detect,
+	.dpms = evdi_connector_dpms,
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.destroy = drm_connector_cleanup,
+	.set_property = evdi_connector_set_property,
+	.reset = evdi_atomic_helper_connector_reset,
+	.atomic_duplicate_state = evdi_atomic_helper_connector_duplicate_state,
+	.atomic_destroy_state = evdi_atomic_helper_connector_destroy_state,
 };
 #endif
 

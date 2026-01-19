@@ -359,7 +359,10 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 				   struct drm_file *owner)
 {
 	struct evdi_event *event;
-	int cur_alloc, peak, new_peak;
+	int cur_alloc, peak;
+#ifdef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
+	int new_peak;
+#endif
 	gfp_t gfp = GFP_ATOMIC;
 
 	event = evdi_pcpu_event_pop();
