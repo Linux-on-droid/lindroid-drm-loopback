@@ -29,7 +29,6 @@ static void evdi_pipe_enable(struct drm_simple_display_pipe *pipe,
 			     struct drm_crtc_state *crtc_state,
 			     struct drm_plane_state *plane_state)
 {
-	drm_crtc_vblank_on(&pipe->crtc);
 }
 #else
 static void evdi_pipe_enable(struct drm_simple_display_pipe *pipe,
@@ -41,22 +40,24 @@ static void evdi_pipe_enable(struct drm_simple_display_pipe *pipe,
 
 static void evdi_pipe_disable(struct drm_simple_display_pipe *pipe)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 19, 0)
 	drm_crtc_vblank_off(&pipe->crtc);
+#endif
 }
 
 static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 			     struct drm_plane_state *old_state)
 {
 	struct drm_plane_state *state = pipe->plane.state;
-	struct evdi_device *evdi = pipe->plane.dev->dev_private;
 	struct drm_framebuffer *fb = state ? state->fb : NULL;
+	struct evdi_device *evdi = pipe->plane.dev->dev_private;
+	struct evdi_framebuffer *efb;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 19, 0)
 	struct drm_pending_vblank_event *vblank_ev;
 	struct drm_device *ddev;
-	struct evdi_framebuffer *efb;
 	unsigned long flags;
 
 	drm_crtc_handle_vblank(&pipe->crtc);
-
 	if (pipe->crtc.state && pipe->crtc.state->event) {
 		ddev = pipe->crtc.dev;
 		vblank_ev = pipe->crtc.state->event;
@@ -65,6 +66,7 @@ static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 		drm_crtc_send_vblank_event(&pipe->crtc, vblank_ev);
 		spin_unlock_irqrestore(&ddev->event_lock, flags);
 	}
+#endif
 
 	if (!state || !fb)
 		return;
