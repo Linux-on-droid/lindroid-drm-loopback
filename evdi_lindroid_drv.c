@@ -107,12 +107,36 @@ static struct drm_driver evdi_driver = {
 
 static int evdi_driver_open(struct drm_device *dev, struct drm_file *file)
 {
+	struct evdi_file_priv *priv;
+
+	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
+
+	mutex_init(&priv->lock);
+#ifdef EVDI_HAVE_XARRAY
+#ifdef EVDI_HAVE_XA_ALLOC_CYCLIC
+	xa_init_flags(&priv->bufid_to_handle, XA_FLAGS_ALLOC);
+	xa_init_flags(&priv->handle_to_bufid, XA_FLAGS_ALLOC);
+	priv->next_handle = 1;
+#else
+	xa_init(&priv->buffers);
+#endif
+#else
+	idr_init(&priv->buffers);
+#endif
+	file->driver_priv = priv;
+
 	return 0;
 }
 
 static void evdi_driver_postclose(struct drm_device *dev, struct drm_file *file)
 {
 	struct evdi_device *evdi = dev->dev_private;
+	struct evdi_file_priv *priv = file->driver_priv;
+	struct drm_file *client;
+	bool send_destroy = false;
+	void *entry;
 
 	if (unlikely(!evdi))
 		return;
@@ -126,6 +150,53 @@ static void evdi_driver_postclose(struct drm_device *dev, struct drm_file *file)
 	evdi_smp_mb();
 
 	evdi_event_cleanup_file(evdi, file);
+
+	client = READ_ONCE(evdi->drm_client);
+	send_destroy = (client && client != file);
+
+	if (priv) {
+		mutex_lock(&priv->lock);
+#ifdef EVDI_HAVE_XARRAY
+#ifdef EVDI_HAVE_XA_ALLOC_CYCLIC
+		{
+			unsigned long handle;
+
+			xa_for_each(&priv->handle_to_bufid, handle, entry) {
+				if (send_destroy)
+					evdi_queue_destroy_event(evdi,
+								 (int)xa_to_value(entry),
+								 client);
+			}
+			xa_destroy(&priv->handle_to_bufid);
+			xa_destroy(&priv->bufid_to_handle);
+		}
+#else
+		{
+			unsigned long id;
+
+			xa_for_each(&priv->buffers, id, entry) {
+				if (send_destroy)
+					evdi_queue_destroy_event(evdi, (int)id, client);
+			}
+			xa_destroy(&priv->buffers);
+		}
+#endif
+#else
+		{
+			int id;
+
+			idr_for_each_entry(&priv->buffers, entry, id) {
+				if (send_destroy)
+					evdi_queue_destroy_event(evdi, id, client);
+			}
+			idr_destroy(&priv->buffers);
+		}
+#endif
+		mutex_unlock(&priv->lock);
+
+		kfree(priv);
+		file->driver_priv = NULL;
+	}
 
 	evdi_debug("Device %d closed by process %d", evdi->dev_index, current->pid);
 }

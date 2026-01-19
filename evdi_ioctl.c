@@ -639,6 +639,99 @@ err_event:
 	return ret;
 }
 
+static inline void evdi_file_track_buffer(struct drm_file *file, int id)
+{
+	struct evdi_file_priv *priv;
+	int ret = 0;
+
+	if (unlikely(!file || id <= 0))
+		return;
+
+	priv = file->driver_priv;
+	if (unlikely(!priv))
+		return;
+
+	mutex_lock(&priv->lock);
+
+#ifdef EVDI_HAVE_XARRAY
+#ifdef EVDI_HAVE_XA_ALLOC_CYCLIC
+	{
+		void *entry;
+		u32 handle = 0;
+
+		entry = xa_load(&priv->bufid_to_handle, id);
+		if (entry)
+			goto out_unlock;
+
+		ret = xa_alloc_cyclic(&priv->handle_to_bufid, &handle,
+				      xa_mk_value((unsigned long)id),
+				      XA_LIMIT(1, INT_MAX),
+				      &priv->next_handle, GFP_KERNEL);
+		if (ret)
+			goto out_unlock;
+
+		ret = xa_err(xa_store(&priv->bufid_to_handle, id,
+				      xa_mk_value((unsigned long)handle),
+				      GFP_KERNEL));
+		if (ret) {
+			xa_erase(&priv->handle_to_bufid, (unsigned long)handle);
+			goto out_unlock;
+		}
+	}
+#else
+	ret = xa_err(xa_store(&priv->buffers, id, xa_mk_value(1), GFP_KERNEL));
+#endif
+#else
+	ret = idr_alloc(&priv->buffers, (void *)1, id, id + 1, GFP_KERNEL);
+	if (ret == id)
+		ret = 0;
+#endif
+
+out_unlock:
+	mutex_unlock(&priv->lock);
+
+	if (unlikely(ret))
+		evdi_warn("Failed to track buffer %d (%d)", id, ret);
+}
+
+static inline void evdi_file_untrack_buffer(struct drm_file *file, int id)
+{
+	struct evdi_file_priv *priv;
+
+	if (unlikely(!file || id <= 0))
+		return;
+
+	priv = file->driver_priv;
+	if (unlikely(!priv))
+		return;
+
+	mutex_lock(&priv->lock);
+
+#ifdef EVDI_HAVE_XARRAY
+#ifdef EVDI_HAVE_XA_ALLOC_CYCLIC
+	{
+		void *entry;
+		u32 handle;
+
+		entry = xa_load(&priv->bufid_to_handle, id);
+		if (!entry)
+			goto out_unlock;
+
+		handle = (u32)xa_to_value(entry);
+		xa_erase(&priv->bufid_to_handle, id);
+		xa_erase(&priv->handle_to_bufid, (unsigned long)handle);
+	}
+#else
+	xa_erase(&priv->buffers, id);
+#endif
+#else
+	idr_remove(&priv->buffers, id);
+#endif
+
+out_unlock:
+	mutex_unlock(&priv->lock);
+}
+
 int evdi_ioctl_gbm_create_buff(struct drm_device *dev, void *data, struct drm_file *file)
 {
 	struct evdi_device *evdi = dev->dev_private;
@@ -696,6 +789,9 @@ int evdi_ioctl_gbm_create_buff(struct drm_device *dev, void *data, struct drm_fi
 			return -EFAULT;
 		}
 	}
+
+	evdi_file_track_buffer(file, req->reply.create.id);
+
 	if (u_stride) {
 		if (evdi_copy_to_user_allow_partial(u_stride, &req->reply.create.stride, sizeof(*u_stride))) {
 			evdi_inflight_req_put(req);
@@ -850,9 +946,15 @@ int evdi_ioctl_gbm_del_buff(struct drm_device *dev, void *data, struct drm_file 
 {
 	struct evdi_device *evdi = dev->dev_private;
 	struct drm_evdi_gbm_del_buff *cmd = data;
+	struct drm_file *client;
 	long ret;
 
-	ret = evdi_queue_destroy_event(evdi, cmd->id, file);
+	client = READ_ONCE(evdi->drm_client);
+
+	ret = evdi_queue_destroy_event(evdi, cmd->id, client ? client : file);
+	if (!ret)
+		evdi_file_untrack_buffer(file, cmd->id);
+
 	return ret;
 }
 
