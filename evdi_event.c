@@ -367,7 +367,7 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 
 	event = evdi_pcpu_event_pop();
 	if (event) {
-		atomic64_inc(&evdi->events.pool_hits);
+		EVDI_PERF_INC64(&evdi->events.pool_hits);
 		EVDI_PERF_INC64(&evdi_perf.pool_alloc_fast);
 		EVDI_PERF_INC64(&evdi_perf.event_freelist_pop_hits);
 		goto init_event;
@@ -376,13 +376,13 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 
 	event = kmem_cache_alloc(global_event_pool.cache, GFP_ATOMIC);
 	if (likely(event)) {
-		atomic64_inc(&evdi->events.pool_hits);
+		EVDI_PERF_INC64(&evdi->events.pool_hits);
 		EVDI_PERF_INC64(&evdi_perf.pool_alloc_fast);
 		event->from_pool = true;
 	} else {
 		event = kmalloc(sizeof(*event), GFP_KERNEL);
 		if (!event) {
-			atomic64_inc(&evdi->events.pool_misses);
+			EVDI_PERF_INC64(&evdi->events.pool_misses);
 			return NULL;
 		}
 		EVDI_PERF_INC64(&evdi_perf.pool_alloc_slow);
