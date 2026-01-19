@@ -512,6 +512,17 @@ struct evdi_perf_counters {
 
 extern struct evdi_perf_counters evdi_perf;
 
+static __always_inline void evdi_wakeup_pollers(struct evdi_device *evdi)
+{
+	if (unlikely(!evdi))
+		return;
+
+	if (atomic_cmpxchg(&evdi->events.wake_pending, 0, 1) == 0) {
+		wake_up_interruptible(&evdi->events.wait_queue);
+		EVDI_PERF_INC64(&evdi_perf.wakeup_count);
+	}
+}
+
 /* External vm_ops */
 extern const struct vm_operations_struct evdi_gem_vm_ops;
 
