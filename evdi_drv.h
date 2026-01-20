@@ -157,10 +157,6 @@ struct evdi_event_pool {
 	struct kmem_cache *inflight_cache;
 	mempool_t *inflight_pool;
 	mempool_t *gralloc_data_pool;
-	atomic_t allocated;
-	atomic_t drm_allocated;
-	atomic_t inflight_allocated;
-	atomic_t peak_usage;
 };
 
 struct evdi_event {

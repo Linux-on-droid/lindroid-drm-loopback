@@ -177,10 +177,6 @@ int evdi_event_system_init(void)
 	if (!global_event_pool.cache)
 		return -ENOMEM;
 
-	atomic_set(&global_event_pool.allocated, 0);
-	atomic_set(&global_event_pool.inflight_allocated, 0);
-	atomic_set(&global_event_pool.peak_usage, 0);
-
 	memset(&evdi_perf, 0, sizeof(evdi_perf));
 	evdi_perf_on = false;
 	evdi_smp_wmb();
@@ -274,11 +270,7 @@ void evdi_event_system_cleanup(void)
 		evdi_pcpu_event_freelist = NULL;
 	}
 
-	if (evdi_perf_on) {
-		evdi_info("Event system cleaned up - Peak: %d, Inflight hits: %lld",
-			  atomic_read(&global_event_pool.peak_usage),
-			  atomic64_read(&evdi_perf.inflight_cache_hits));
-	}
+	evdi_debug("Event system cleaned up");
 }
 
 int evdi_event_init(struct evdi_device *evdi)
@@ -359,10 +351,7 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 				   struct drm_file *owner)
 {
 	struct evdi_event *event;
-	int cur_alloc, peak;
-#ifdef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
-	int new_peak;
-#endif
+
 	gfp_t gfp = GFP_ATOMIC;
 
 	event = evdi_pcpu_event_pop();
@@ -410,19 +399,6 @@ init_event:
 	event->owner = owner;
 	event->evdi = evdi;
 	atomic_set(&event->freed, 0);
-
-	cur_alloc = atomic_inc_return(&global_event_pool.allocated);
-#ifdef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
-	do {
-		peak = atomic_read(&global_event_pool.peak_usage);
-		new_peak = max(cur_alloc, peak);
-	} while (peak != new_peak &&
-		 atomic_cmpxchg_relaxed(&global_event_pool.peak_usage, peak, new_peak) != peak);
-#else
-	peak = atomic_read(&global_event_pool.peak_usage);
-	if (cur_alloc > peak)
-		atomic_cmpxchg(&global_event_pool.peak_usage, peak, cur_alloc);
-#endif
 
 	return event;
 }
@@ -491,7 +467,6 @@ static void evdi_inflight_req_release(struct kref *kref)
 	} else {
 		mempool_free(req, global_event_pool.inflight_pool);
 	}
-	atomic_dec(&global_event_pool.inflight_allocated);
 }
 
 struct evdi_inflight_req *evdi_inflight_req_alloc(struct evdi_device *evdi)
@@ -539,7 +514,6 @@ struct evdi_inflight_req *evdi_inflight_req_alloc(struct evdi_device *evdi)
 	}
 	atomic_set(&req->freed, 0);
 
-	atomic_inc(&global_event_pool.inflight_allocated);
 	EVDI_PERF_INC64(&evdi_perf.inflight_cache_hits);
 	return req;
 }
@@ -548,8 +522,6 @@ void evdi_event_free_immediate(struct evdi_event *event)
 {
 	if (!event)
 		return;
-
-	atomic_dec(&global_event_pool.allocated);
 
 	if (event->from_pool && global_event_pool.cache) {
 		if (evdi_pcpu_event_push(event)) {
