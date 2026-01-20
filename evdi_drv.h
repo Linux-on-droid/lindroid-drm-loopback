@@ -157,10 +157,6 @@ struct evdi_event_pool {
 	struct kmem_cache *inflight_cache;
 	mempool_t *inflight_pool;
 	mempool_t *gralloc_data_pool;
-	atomic_t allocated;
-	atomic_t drm_allocated;
-	atomic_t inflight_allocated;
-	atomic_t peak_usage;
 };
 
 struct evdi_event {
@@ -382,11 +378,8 @@ int evdi_drm_gem_mmap(struct file *filp, struct vm_area_struct *vma);
 void evdi_gem_free_object(struct drm_gem_object *gem_obj);
 uint32_t evdi_gem_object_handle_lookup(struct drm_file *filp, struct drm_gem_object *obj);
 struct sg_table *evdi_prime_get_sg_table(struct drm_gem_object *obj);
-struct drm_gem_object *evdi_prime_import_sg_table(struct drm_device *dev,
-						  struct dma_buf_attachment *attach,
-						  struct sg_table *sg);
-int evdi_gem_vmap(struct evdi_gem_object *obj);
-void evdi_gem_vunmap(struct evdi_gem_object *obj);
+struct drm_gem_object *evdi_gem_prime_import(struct drm_device *dev,
+					     struct dma_buf *dma_buf);
 #if KERNEL_VERSION(4, 17, 0) <= LINUX_VERSION_CODE
 vm_fault_t evdi_gem_fault(struct vm_fault *vmf);
 #else
@@ -511,6 +504,17 @@ struct evdi_perf_counters {
 };
 
 extern struct evdi_perf_counters evdi_perf;
+
+static __always_inline void evdi_wakeup_pollers(struct evdi_device *evdi)
+{
+	if (unlikely(!evdi))
+		return;
+
+	if (atomic_cmpxchg(&evdi->events.wake_pending, 0, 1) == 0) {
+		wake_up_interruptible(&evdi->events.wait_queue);
+		EVDI_PERF_INC64(&evdi_perf.wakeup_count);
+	}
+}
 
 /* External vm_ops */
 extern const struct vm_operations_struct evdi_gem_vm_ops;

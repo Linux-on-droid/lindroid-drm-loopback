@@ -888,7 +888,7 @@ out_complete:
 	goto out_wake;
 
 out_wake:
-	wake_up_interruptible(&evdi->events.wait_queue);
+	evdi_wakeup_pollers(evdi);
 	return 0;
 }
 
@@ -899,7 +899,7 @@ int evdi_ioctl_destroy_buff_callback(struct drm_device *dev, void *data, struct 
 	EVDI_PERF_INC64(&evdi_perf.ioctl_calls[4]);
 	EVDI_PERF_INC64(&evdi_perf.callback_completions);
 
-	wake_up_interruptible(&evdi->events.wait_queue);
+	evdi_wakeup_pollers(evdi);
 
 	return 0;
 }
@@ -911,7 +911,7 @@ int evdi_ioctl_swap_callback(struct drm_device *dev, void *data, struct drm_file
 	EVDI_PERF_INC64(&evdi_perf.ioctl_calls[5]);
 	EVDI_PERF_INC64(&evdi_perf.callback_completions);
 
-	wake_up_interruptible(&evdi->events.wait_queue);
+	evdi_wakeup_pollers(evdi);
 
 	return 0;
 }
