@@ -333,68 +333,29 @@ static void evdi_unpin_pages(struct evdi_gem_object *obj)
 	}
 }
 
-int evdi_gem_vmap(struct evdi_gem_object *obj)
+struct drm_gem_object *evdi_gem_prime_import(struct drm_device *dev,
+					     struct dma_buf *dma_buf)
 {
-	int page_count = DIV_ROUND_UP(obj->base.size, PAGE_SIZE);
+	struct dma_buf_attachment *attach;
+	struct evdi_gem_object *obj;
 	int ret;
 
-	if (evdi_drm_gem_object_use_import_attach(&obj->base)) {
-#if KERNEL_VERSION(5, 11, 0) <= LINUX_VERSION_CODE
-		{
-			int retm;
-#if KERNEL_VERSION(5, 18, 0) <= LINUX_VERSION_CODE
-			struct iosys_map map;
-			iosys_map_set_vaddr(&map, NULL);
-#else
-			struct dma_buf_map map = DMA_BUF_MAP_INIT_VADDR(NULL);
-#endif
-			retm = dma_buf_vmap(obj->base.import_attach->dmabuf, &map);
-			if (retm)
-				return -ENOMEM;
+	attach = dma_buf_attach(dma_buf, dev->dev);
+	if (IS_ERR(attach))
+		return ERR_CAST(attach);
 
-#ifdef IOSYS_MAP_IS_IOMEM
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
-			obj->vmap_is_iomem = iosys_map_is_iomem(&map);
-#endif
-			obj->vmapping = obj->vmap_is_iomem ?
-				(void __force *)map.vaddr_iomem :
-				(void *)map.vaddr;
-#else
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
-			obj->vmap_is_iomem = map.is_iomem;
-#endif
-			obj->vmapping = map.vaddr;
-#endif
-		}
-#else
-		obj->vmapping = dma_buf_vmap(obj->base.import_attach->dmabuf);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
-		obj->vmap_is_iomem = false;
-#endif
-		if (!obj->vmapping)
-			return -ENOMEM;
-#endif
-		return 0;
- 	}
+	get_dma_buf(dma_buf);
 
-	ret = evdi_pin_pages(obj);
-	if (ret)
-		return ret;
-
-#if KERNEL_VERSION(5, 9, 0) <= LINUX_VERSION_CODE
-	obj->vmapping = vm_map_ram(obj->pages, page_count, -1);
-#else
-	obj->vmapping = vm_map_ram(obj->pages, page_count, -1, PAGE_KERNEL);
-#endif
-	obj->vmap_is_vmram = obj->vmapping != NULL;
-
-	if (!obj->vmapping) {
-		obj->vmapping = vmap(obj->pages, page_count, 0, PAGE_KERNEL);
-		if (!obj->vmapping)
-			return -ENOMEM;
+	obj = evdi_gem_alloc_object(dev, dma_buf->size);
+	if (IS_ERR(obj)) {
+		ret = PTR_ERR(obj);
+		dma_buf_detach(dma_buf, attach);
+		dma_buf_put(dma_buf);
+		return ERR_PTR(ret);
 	}
 
-	return 0;
+	obj->base.import_attach = attach;
+	return &obj->base;
 }
 
 void evdi_gem_vunmap(struct evdi_gem_object *obj)
@@ -449,7 +410,9 @@ void evdi_gem_free_object(struct drm_gem_object *gem_obj)
 		evdi_gem_vunmap(obj);
 
 	if (gem_obj->import_attach) {
-		drm_prime_gem_destroy(gem_obj, obj->sg);
+		dma_buf_detach(gem_obj->import_attach->dmabuf,
+			       gem_obj->import_attach);
+		dma_buf_put(gem_obj->import_attach->dmabuf);
 	}
 
 	if (obj->pages)
@@ -464,64 +427,13 @@ void evdi_gem_free_object(struct drm_gem_object *gem_obj)
 	kfree(obj);
 }
 
-static struct sg_table *evdi_dup_sg_table(const struct sg_table *src)
-{
-	struct sg_table *dst;
-	struct scatterlist *s, *d;
-	struct page *page;
-	int i, nents;
-	unsigned int len = 0;
-
-	if (!src || !src->sgl)
-		return ERR_PTR(-EINVAL);
-
-	dst = kzalloc(sizeof(*dst), GFP_KERNEL);
-	if (!dst)
-		return ERR_PTR(-ENOMEM);
-
-	nents = src->nents;
-	if (sg_alloc_table(dst, nents, GFP_KERNEL)) {
-		kfree(dst);
-		return ERR_PTR(-ENOMEM);
-	}
-
-	s = src->sgl;
-	d = dst->sgl;
-	for (i = 0; i < nents; i++, s = sg_next(s), d = sg_next(d)) {
-		page = sg_page(s);
-		len = s->length;
-		sg_set_page(d, page, len, s->offset);
-	}
-
-	return dst;
-}
-
 struct sg_table *evdi_prime_get_sg_table(struct drm_gem_object *obj)
 {
 	struct evdi_gem_object *bo = to_evdi_bo(obj);
-
-	if (bo->sg) {
-		return evdi_dup_sg_table(bo->sg);
-	}
 
 #if KERNEL_VERSION(5, 10, 0) <= LINUX_VERSION_CODE
 	return drm_prime_pages_to_sg(obj->dev, bo->pages, bo->base.size >> PAGE_SHIFT);
 #else
 	return drm_prime_pages_to_sg(bo->pages, bo->base.size >> PAGE_SHIFT);
 #endif
-}
-
-struct drm_gem_object *evdi_prime_import_sg_table(struct drm_device *dev,
-						   struct dma_buf_attachment *attach,
-						   struct sg_table *sg)
-{
-	struct evdi_gem_object *obj;
-
-	obj = evdi_gem_alloc_object(dev, attach->dmabuf->size);
-	if (IS_ERR(obj))
-		return ERR_CAST(obj);
-
-	obj->sg = sg;
-
-	return &obj->base;
 }

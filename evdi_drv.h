@@ -378,11 +378,8 @@ int evdi_drm_gem_mmap(struct file *filp, struct vm_area_struct *vma);
 void evdi_gem_free_object(struct drm_gem_object *gem_obj);
 uint32_t evdi_gem_object_handle_lookup(struct drm_file *filp, struct drm_gem_object *obj);
 struct sg_table *evdi_prime_get_sg_table(struct drm_gem_object *obj);
-struct drm_gem_object *evdi_prime_import_sg_table(struct drm_device *dev,
-						  struct dma_buf_attachment *attach,
-						  struct sg_table *sg);
-int evdi_gem_vmap(struct evdi_gem_object *obj);
-void evdi_gem_vunmap(struct evdi_gem_object *obj);
+struct drm_gem_object *evdi_gem_prime_import(struct drm_device *dev,
+					     struct dma_buf *dma_buf);
 #if KERNEL_VERSION(4, 17, 0) <= LINUX_VERSION_CODE
 vm_fault_t evdi_gem_fault(struct vm_fault *vmf);
 #else
