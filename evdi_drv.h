@@ -506,15 +506,51 @@ struct evdi_perf_counters {
 
 extern struct evdi_perf_counters evdi_perf;
 
+/* Queue wakeup helpers */
+static __always_inline bool evdi_events_inc_and_test_first(struct evdi_device *evdi)
+{
+	int qsz;
+
+	if (unlikely(!evdi))
+		return false;
+
+	qsz = atomic_inc_return(&evdi->events.queue_size);
+	return likely(qsz == 1);
+}
+
+static __always_inline bool evdi_events_dec_and_test_empty(struct evdi_device *evdi)
+{
+	int qsz;
+
+	if (unlikely(!evdi))
+		return false;
+
+	qsz = atomic_dec_return(&evdi->events.queue_size);
+	return likely(qsz == 0);
+}
+
 static __always_inline void evdi_wakeup_pollers(struct evdi_device *evdi)
 {
 	if (unlikely(!evdi))
 		return;
 
-	if (atomic_cmpxchg(&evdi->events.wake_pending, 0, 1) == 0) {
+	if (unlikely(atomic_read(&evdi->events.queue_size) <= 0))
+		return;
+
+	if (unlikely(!waitqueue_active(&evdi->events.wait_queue)))
+		return;
+
+#ifdef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
+	if (atomic_cmpxchg_relaxed(&evdi->events.wake_pending, 0, 1) != 0)
+		return;
+#else
+	if (atomic_cmpxchg(&evdi->events.wake_pending, 0, 1) != 0)
+		return;
+#endif
+	evdi_smp_wmb();
+	if (likely(waitqueue_active(&evdi->events.wait_queue)))
 		wake_up_interruptible(&evdi->events.wait_queue);
-		EVDI_PERF_INC64(&evdi_perf.wakeup_count);
-	}
+	EVDI_PERF_INC64(&evdi_perf.wakeup_count);
 }
 
 /* External vm_ops */

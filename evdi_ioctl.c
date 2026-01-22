@@ -32,13 +32,17 @@ static inline int evdi_get_unused_fds_batch(int n, int flags, int *fds)
 {
 	int i, fd, ret = 0;
 
-	if (!fds || n <= 0)
+	prefetchw(fds);
+
+	if (unlikely(!fds || n <= 0))
 		return ret;
 
 	for (i = 0; i < n; i++)
 		fds[i] = -1;
 
 	for (i = 0; i < n; i++) {
+		if (i + 1 < n)
+			prefetchw(&fds[i+1]);
 		fd = get_unused_fd_flags(flags);
 		if (unlikely(fd < 0)) {
 			ret = fd;

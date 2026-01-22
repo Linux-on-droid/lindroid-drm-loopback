@@ -173,6 +173,7 @@ void evdi_event_cleanup(struct evdi_device *evdi)
 	WRITE_ONCE(evdi->events.head, NULL);
 	WRITE_ONCE(evdi->events.tail, NULL);
 	atomic_set(&evdi->events.queue_size, 0);
+	atomic_set(&evdi->events.wake_pending, 0);
 	spin_unlock(&evdi->events.lock);
 
 	while (event) {
@@ -374,7 +375,7 @@ void evdi_event_free(struct evdi_event *event)
 
 static inline bool evdi_event_queue_lockfree(struct evdi_device *evdi, struct evdi_event *event)
 {
-	bool was_empty = false;
+	bool first;
 
 	if (unlikely(atomic_read_acquire(&evdi->events.cleanup_in_progress)))
 		return false;
@@ -383,26 +384,24 @@ static inline bool evdi_event_queue_lockfree(struct evdi_device *evdi, struct ev
 		return false;
 
 	prefetchw(&event->llist);
-	was_empty = llist_add(&event->llist, &evdi->events.lockfree_head);
+	llist_add(&event->llist, &evdi->events.lockfree_head);
 
-	atomic_inc(&evdi->events.queue_size);
+	first = evdi_events_inc_and_test_first(evdi);
 	atomic64_inc(&evdi->events.events_queued);
 	EVDI_PERF_INC64(&evdi_perf.event_queue_ops);
 	
 	evdi_smp_wmb();
 
-	if (atomic_cmpxchg(&evdi->events.wake_pending, 0, 1) == 0 &&
-			was_empty) {
-		wake_up_interruptible(&evdi->events.wait_queue);
-		EVDI_PERF_INC64(&evdi_perf.wakeup_count);
-	}
-	
+	if (likely(first))
+		evdi_wakeup_pollers(evdi);
+
 	return true;
 }
 
 void evdi_event_queue(struct evdi_device *evdi, struct evdi_event *event)
 {
 	struct evdi_event *tail;
+	bool first;
 
 	if (unlikely(!evdi || !event))
 		return;
@@ -420,22 +419,19 @@ void evdi_event_queue(struct evdi_device *evdi, struct evdi_event *event)
 	WRITE_ONCE(event->next, NULL);
 	evdi_smp_wmb();
 	tail = READ_ONCE(evdi->events.tail);
-	if (tail) {
+	if (tail)
 		WRITE_ONCE(tail->next, event);
-	} else {
+	else
 		WRITE_ONCE(evdi->events.head, event);
-	}
 
 	WRITE_ONCE(evdi->events.tail, event);
 	spin_unlock(&evdi->events.lock);
 
-	atomic_inc(&evdi->events.queue_size);
+	first = evdi_events_inc_and_test_first(evdi);
 	atomic64_inc(&evdi->events.events_queued);
 	EVDI_PERF_INC64(&evdi_perf.event_queue_ops);
-	if (atomic_cmpxchg(&evdi->events.wake_pending, 0, 1) == 0) {
-		wake_up_interruptible(&evdi->events.wait_queue);
-		EVDI_PERF_INC64(&evdi_perf.wakeup_count);
-	}
+	if (likely(first))
+		evdi_wakeup_pollers(evdi);
 }
 
 static inline struct evdi_event *evdi_event_pop_head_locked(struct evdi_device *evdi)
@@ -487,6 +483,7 @@ static inline void evdi_event_drain_lockfree(struct evdi_device *evdi)
 struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi)
 {
 	struct evdi_event *event = NULL;
+	bool empty;
 
  	if (unlikely(!evdi))
  		return NULL;
@@ -517,10 +514,11 @@ struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi)
 
 found_one:
 	prefetch(event->data);
-	atomic_dec(&evdi->events.queue_size);
+	empty = evdi_events_dec_and_test_empty(evdi);
 	atomic64_inc(&evdi->events.events_dequeued);
 	EVDI_PERF_INC64(&evdi_perf.event_dequeue_ops);
-	atomic_set(&evdi->events.wake_pending, 0);
+	if (likely(empty))
+		atomic_set(&evdi->events.wake_pending, 0);
 	evdi_smp_wmb();
 	return event;
 }
@@ -610,6 +608,9 @@ void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file)
 
 	atomic_set(&evdi->events.cleanup_in_progress, 0);
 	evdi_smp_wmb();
+	if (atomic_read(&evdi->events.queue_size) == 0)
+		atomic_set(&evdi->events.wake_pending, 0);
+
 	wake_up_interruptible(&evdi->events.wait_queue);
 	
 	if (lf_removed || sp_removed)
@@ -626,7 +627,15 @@ int evdi_event_wait(struct evdi_device *evdi, struct drm_file *file)
 
 	for (;;) {
 		prepare_to_wait(&evdi->events.wait_queue, &wait, TASK_INTERRUPTIBLE);
-		atomic_set(&evdi->events.wake_pending, 0);
+
+		if (atomic_read_acquire(&evdi->events.wake_pending)) {
+#ifdef EVDI_HAVE_ATOMIC_CMPXCHG_RELAXED
+			atomic_xchg_relaxed(&evdi->events.wake_pending, 0);
+#else
+			atomic_set(&evdi->events.wake_pending, 0);
+#endif
+		}
+
 		evdi_smp_mb();
 		if (atomic_read(&evdi->events.queue_size) > 0) {
 			ret = 0;
