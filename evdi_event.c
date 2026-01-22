@@ -23,114 +23,7 @@ DEFINE_STATIC_KEY_FALSE(evdi_perf_key);
 bool evdi_perf_on;
 struct evdi_perf_counters evdi_perf;
 
-#define EVDI_PCPU_EVENT_FREE_MAX 256
-struct evdi_pcpu_event_freelist {
-	struct llist_head free;
-	atomic_t free_count;
-} ____cacheline_aligned_in_smp;
-
-static struct evdi_pcpu_event_freelist __percpu *evdi_pcpu_event_freelist;
-
-struct evdi_small_payload {
-	struct llist_node lnode;
-	u8 data[EVDI_SMALL_PAYLOAD_MAX];
-};
-
-#define EVDI_PCPU_SMALL_FREE_MAX 256
-struct evdi_pcpu_small_freelist {
-	struct llist_head free;
-	atomic_t free_count;
-} ____cacheline_aligned_in_smp;
-
-static struct evdi_pcpu_small_freelist __percpu *evdi_pcpu_small_freelist;
-static mempool_t *evdi_small_payload_pool;
-
 static DEFINE_PER_CPU(int, evdi_inflight_last_slot);
-
-static inline struct evdi_small_payload *evdi_small_from_data(void *p)
-{
-	return container_of(p, struct evdi_small_payload, data);
-}
-
-void *evdi_small_payload_alloc(gfp_t gfp)
-{
-	struct evdi_pcpu_small_freelist *pc;
-	struct llist_node *node;
-	struct evdi_small_payload *blk;
-
-	if (!evdi_pcpu_small_freelist || !evdi_small_payload_pool)
-		return NULL;
-
-	pc = this_cpu_ptr(evdi_pcpu_small_freelist);
-	node = llist_del_first(&pc->free);
-	if (node) {
-		atomic_dec(&pc->free_count);
-		blk = llist_entry(node, struct evdi_small_payload, lnode);
-		return blk->data;
-	}
-	blk = mempool_alloc(evdi_small_payload_pool, gfp);
-	return blk ? blk->data : NULL;
-}
-
-void evdi_small_payload_free(void *ptr)
-{
-	struct evdi_pcpu_small_freelist *pc;
-	struct evdi_small_payload *blk;
-
-	if (!ptr || !evdi_pcpu_small_freelist || !evdi_small_payload_pool)
-		return;
-
-	blk = evdi_small_from_data(ptr);
-	pc = this_cpu_ptr(evdi_pcpu_small_freelist);
-	if (atomic_read(&pc->free_count) < EVDI_PCPU_SMALL_FREE_MAX) {
-		llist_add(&blk->lnode, &pc->free);
-		atomic_inc(&pc->free_count);
-		return;
-	}
-	mempool_free(blk, evdi_small_payload_pool);
-}
-
-static void *evdi_small_payload_alloc_cb(gfp_t gfp_mask, void *pool_data)
-{
-	return kmalloc(sizeof(struct evdi_small_payload), gfp_mask);
-}
-
-static void evdi_small_payload_free_cb(void *element, void *pool_data)
-{
-	kfree(element);
-}
-
-static struct evdi_event *evdi_pcpu_event_pop(void)
-{
-	struct evdi_pcpu_event_freelist *pc;
-	struct llist_node *node;
-
-	if (!evdi_pcpu_event_freelist)
-		return NULL;
-
-	pc = this_cpu_ptr(evdi_pcpu_event_freelist);
-	node = llist_del_first(&pc->free);
-	if (!node)
-		return NULL;
-
-	atomic_dec(&pc->free_count);
-	prefetch(llist_entry(node, struct evdi_event, llist));
-
-	return llist_entry(node, struct evdi_event, llist);
-}
-
-static bool evdi_pcpu_event_push(struct evdi_event *event)
-{
-	struct evdi_pcpu_event_freelist *pc;
-	if (!evdi_pcpu_event_freelist || !event)
-		return false;
-	pc = this_cpu_ptr(evdi_pcpu_event_freelist);
-	if (atomic_read(&pc->free_count) >= EVDI_PCPU_EVENT_FREE_MAX)
-		return false;
-	llist_add(&event->llist, &pc->free);
-	atomic_inc(&pc->free_count);
-	return true;
-}
 
 static void *evdi_inflight_req_pool_alloc(gfp_t gfp_mask, void *pool_data)
 {
@@ -160,16 +53,6 @@ static void evdi_gralloc_data_free(void *element, void *pool_data)
 
 int evdi_event_system_init(void)
 {
-	int cpu;
-	struct evdi_pcpu_event_freelist *pc;
-	struct evdi_pcpu_small_freelist *pcs;
-
-	evdi_small_payload_pool = mempool_create(
-		EVDI_SMALL_POOL_MIN,
-		evdi_small_payload_alloc_cb,
-		evdi_small_payload_free_cb,
-		NULL);
-
 	global_event_pool.cache = kmem_cache_create("evdi_events",
 						   sizeof(struct evdi_event),
 						   0, SLAB_HWCACHE_ALIGN,
@@ -180,24 +63,6 @@ int evdi_event_system_init(void)
 	memset(&evdi_perf, 0, sizeof(evdi_perf));
 	evdi_perf_on = false;
 	evdi_smp_wmb();
-
-	evdi_pcpu_event_freelist = alloc_percpu(struct evdi_pcpu_event_freelist);
-	if (evdi_pcpu_event_freelist) {
-		for_each_possible_cpu(cpu) {
-			pc = per_cpu_ptr(evdi_pcpu_event_freelist, cpu);
-			init_llist_head(&pc->free);
-			atomic_set(&pc->free_count, 0);
-		}
-	}
-
-	evdi_pcpu_small_freelist = alloc_percpu(struct evdi_pcpu_small_freelist);
-	if (evdi_pcpu_small_freelist) {
-		for_each_possible_cpu(cpu) {
-			pcs = per_cpu_ptr(evdi_pcpu_small_freelist, cpu);
-			init_llist_head(&pcs->free);
-			atomic_set(&pcs->free_count, 0);
-		}
-	}
 
 	global_event_pool.inflight_pool = mempool_create(
 		EVDI_INFLIGHT_POOL_MIN,
@@ -233,16 +98,7 @@ int evdi_event_system_init(void)
 	return 0;
 
 err:
-	if (evdi_pcpu_event_freelist)
-		free_percpu(evdi_pcpu_event_freelist);
-
-	if (evdi_pcpu_small_freelist)
-		free_percpu(evdi_pcpu_small_freelist);
-
 	mempool_destroy(global_event_pool.inflight_pool);
-	if (evdi_small_payload_pool)
-		mempool_destroy(evdi_small_payload_pool);
-
 	kmem_cache_destroy(global_event_pool.cache);
 	return -ENOMEM;
 }
@@ -258,16 +114,6 @@ void evdi_event_system_cleanup(void)
 	if (global_event_pool.cache) {
 		kmem_cache_destroy(global_event_pool.cache);
 		global_event_pool.cache = NULL;
-	}
-
-	if (evdi_pcpu_small_freelist) {
-		free_percpu(evdi_pcpu_small_freelist);
-		evdi_pcpu_small_freelist = NULL;
-	}
-
-	if (evdi_pcpu_event_freelist) {
-		free_percpu(evdi_pcpu_event_freelist);
-		evdi_pcpu_event_freelist = NULL;
 	}
 
 	evdi_debug("Event system cleaned up");
@@ -298,8 +144,6 @@ int evdi_event_init(struct evdi_device *evdi)
 
 	atomic64_set(&evdi->events.events_queued, 0);
 	atomic64_set(&evdi->events.events_dequeued, 0);
-	atomic64_set(&evdi->events.pool_hits, 0);
-	atomic64_set(&evdi->events.pool_misses, 0);
 	atomic_set(&evdi->events.wake_pending, 0);
 
 	evdi_smp_wmb();
@@ -352,49 +196,28 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 {
 	struct evdi_event *event;
 
-	gfp_t gfp = GFP_ATOMIC;
-
-	event = evdi_pcpu_event_pop();
-	if (event) {
-		EVDI_PERF_INC64(&evdi->events.pool_hits);
-		EVDI_PERF_INC64(&evdi_perf.pool_alloc_fast);
-		EVDI_PERF_INC64(&evdi_perf.event_freelist_pop_hits);
-		goto init_event;
-	}
-	EVDI_PERF_INC64(&evdi_perf.event_freelist_pop_misses);
-
 	event = kmem_cache_alloc(global_event_pool.cache, GFP_ATOMIC);
-	if (likely(event)) {
-		EVDI_PERF_INC64(&evdi->events.pool_hits);
-		EVDI_PERF_INC64(&evdi_perf.pool_alloc_fast);
-		event->from_pool = true;
-	} else {
-		event = kmalloc(sizeof(*event), GFP_KERNEL);
-		if (!event) {
-			EVDI_PERF_INC64(&evdi->events.pool_misses);
-			return NULL;
-		}
-		EVDI_PERF_INC64(&evdi_perf.pool_alloc_slow);
-		event->from_pool = false;
-	}
+	if (unlikely(!event))
+		return NULL;
 
-init_event:
+	EVDI_PERF_INC64(&evdi_perf.allocs);
+	event->from_pool = true;
+
 	event->type = type;
 	event->poll_id = poll_id;
-	event->async = async;
-	if(async) {
-		if (data_size) {
-			event->data = kmemdup(data, data_size, gfp);
-			if (!event->data) {
-				evdi_event_free_immediate(event);
-				return NULL;
-			}
-		}
-	} else {
-		event->data = data;
-	}
+	event->data = data;
 	event->data_size = data_size;
-	event->payload_type = 0;
+	event->payload_size = 0;
+	if (data && data_size > 0) {
+		size_t copy_size = (data_size > EVDI_EVENT_PAYLOAD_MAX) ?
+			EVDI_EVENT_PAYLOAD_MAX : data_size;
+		if (unlikely(copy_size > EVDI_EVENT_PAYLOAD_MAX)) {
+			evdi_warn("Event payload truncated %zu->%d bytes",
+				data_size, EVDI_EVENT_PAYLOAD_MAX);
+		}
+		memcpy(event->payload, data, copy_size);
+		event->payload_size = copy_size;
+	}
 	event->next = NULL;
 	event->owner = owner;
 	event->evdi = evdi;
@@ -514,7 +337,6 @@ struct evdi_inflight_req *evdi_inflight_req_alloc(struct evdi_device *evdi)
 	}
 	atomic_set(&req->freed, 0);
 
-	EVDI_PERF_INC64(&evdi_perf.inflight_cache_hits);
 	return req;
 }
 
@@ -523,38 +345,18 @@ void evdi_event_free_immediate(struct evdi_event *event)
 	if (!event)
 		return;
 
-	if (event->from_pool && global_event_pool.cache) {
-		if (evdi_pcpu_event_push(event)) {
-			EVDI_PERF_INC64(&evdi_perf.event_freelist_pushes);
-			return;
-		}
+	if (likely(event->from_pool && global_event_pool.cache))
 		kmem_cache_free(global_event_pool.cache, event);
-	} else {
+	else
 		kfree(event);
-	}
 }
 
 void evdi_event_free_rcu(struct rcu_head *head)
 {
 	struct evdi_event *event = container_of(head, struct evdi_event, rcu);
 
-	if (event->data && event->data_size > 0) {
-		u8 ptype = READ_ONCE(event->payload_type);
-		switch (ptype) {
-		case 1:
-			evdi_small_payload_free(event->data);
-			break;
-		case 2:
-			kfree(event->data);
-			break;
-		default:
-			break;
-		}
-	}
-
 	WRITE_ONCE(event->data, NULL);
 	WRITE_ONCE(event->data_size, 0);
-	WRITE_ONCE(event->payload_type, 0);	
 
 	evdi_event_free_immediate(event);
 }
@@ -566,9 +368,6 @@ void evdi_event_free(struct evdi_event *event)
 
 	if (atomic_xchg(&event->freed, 1))
 		return;
-
-	if (event->async)
-		kfree(event->data);
 
 	call_rcu(&event->rcu, evdi_event_free_rcu);
 }

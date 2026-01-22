@@ -109,7 +109,6 @@ static int evdi_copy_to_user_allow_partial(void __user *dst, const void *src, si
 	if (!len)
 		return 0;
 
-	prefetch(src);
 	not = copy_to_user(dst, src, len);
 	if (not == len)
 		return -EFAULT;
@@ -330,102 +329,50 @@ void evdi_inflight_discard_owner(struct evdi_device *evdi, struct drm_file *owne
 #endif
 }
 
-static int evdi_queue_create_event_with_id(struct evdi_device *evdi,
-					   struct drm_evdi_gbm_create_buff *params,
-					   struct drm_file *owner,
-					   int poll_id)
+static inline size_t evdi_event_serialize_payload(struct evdi_event *e,
+						  void *out_buf,
+						  size_t out_buf_size)
 {
-	struct evdi_event *event;
-	void *data = NULL;
-	bool small = false;
+	size_t copy_size;
 
-	data = evdi_small_payload_alloc(GFP_ATOMIC);
-	if (data) {
-		small = true;
-	} else {
-		data = kmalloc(sizeof(*params), GFP_ATOMIC);
-		if (!data)
-			return -ENOMEM;
-	}
+	if (unlikely(!e || !out_buf || !out_buf_size))
+		return 0;
 
-	memcpy(data, params, sizeof(*params));
+	copy_size = min(e->payload_size, out_buf_size);
+	if (copy_size)
+		memcpy(out_buf, e->payload, copy_size);
 
-	event = evdi_event_alloc(evdi, create_buf,
-				 poll_id,
-				 data, sizeof(*params), false, owner);
-	if (!event) {
-		if (small)
-			evdi_small_payload_free(data);
-		else
-			kfree(data);
-
-		return -ENOMEM;
-	}
-	if (sizeof(*params) == 0) {
-		EVDI_PERF_INC64(&evdi_perf.event_payload_none_allocs);
-	} else if (small) {
-		EVDI_PERF_INC64(&evdi_perf.event_payload_small_allocs);
-	} else {
-		EVDI_PERF_INC64(&evdi_perf.event_payload_heap_allocs);
-	}
-	event->payload_type = small ? 1 : 2;
-
-	evdi_event_queue(evdi, event);
-	return 0;
+	return copy_size;
 }
 
-static int evdi_queue_struct_event_with_id(struct evdi_device *evdi,
-	void *params, size_t params_size,
-	enum poll_event_type type,
-	struct drm_file *owner,
-	int poll_id)
+static int evdi_queue_create_event_with_id(struct evdi_device *evdi,
+	   struct drm_evdi_gbm_create_buff *params,
+	   struct drm_file *owner,
+	   int poll_id)
 {
-	struct evdi_event *event;
-	void *data = NULL;
-	bool small = false;
-
-	if (params_size <= EVDI_SMALL_PAYLOAD_MAX) {
-		data = evdi_small_payload_alloc(GFP_ATOMIC);
-		if (data)
-			small = true;
-	}
-	if (!data) {
-		data = kmalloc(params_size, GFP_ATOMIC);
-		if (!data)
-			return -ENOMEM;
-	}
-
-	memcpy(data, params, params_size);
-
-	event = evdi_event_alloc(evdi, type, poll_id, data, params_size, false, owner);
-	if (!event) {
-		if (small)
-			evdi_small_payload_free(data);
-		else
-			kfree(data);
-
+	struct evdi_event *event = evdi_event_alloc(evdi, create_buf, poll_id,
+		(void *)params, sizeof(*params), false, owner);
+	if (!event)
 		return -ENOMEM;
-	}
-	if (sizeof(*params) == 0) {
-		EVDI_PERF_INC64(&evdi_perf.event_payload_none_allocs);
-	} else if (small) {
-		EVDI_PERF_INC64(&evdi_perf.event_payload_small_allocs);
-	} else {
-		EVDI_PERF_INC64(&evdi_perf.event_payload_heap_allocs);
-	}
-	event->payload_type = small ? 1 : 2;
 
 	evdi_event_queue(evdi, event);
 	return 0;
 }
 
 static int evdi_queue_get_buf_event_with_id(struct evdi_device *evdi,
-					    struct drm_evdi_gbm_get_buff *params,
-					    struct drm_file *owner,
-					    int poll_id)
+	struct drm_evdi_gbm_get_buff *params,
+	struct drm_file *owner,
+	int poll_id)
 {
-	return evdi_queue_struct_event_with_id(evdi, params, sizeof(*params),
-					       get_buf, owner, poll_id);
+	struct evdi_event *event;
+
+	event = evdi_event_alloc(evdi, get_buf, poll_id,
+		(void *)params, sizeof(*params), false, owner);
+	if (!event)
+		return -ENOMEM;
+
+	evdi_event_queue(evdi, event);
+	return 0;
 }
 
 static inline void evdi_flush_work(struct evdi_device *evdi)
@@ -508,7 +455,9 @@ int evdi_ioctl_poll(struct drm_device *dev, void *data, struct drm_file *file)
 	struct evdi_device *evdi = dev->dev_private;
 	struct drm_evdi_poll *cmd = data;
 	struct evdi_event *event;
+	size_t payload_size;
 	int ret;
+	u8 payload_buf[EVDI_EVENT_PAYLOAD_MAX];
 
 	EVDI_PERF_INC64(&evdi_perf.ioctl_calls[1]);
 
@@ -516,9 +465,11 @@ int evdi_ioctl_poll(struct drm_device *dev, void *data, struct drm_file *file)
 	if (likely(event)) {
 		cmd->event = event->type;
 		cmd->poll_id = event->poll_id;
-
-		if (event->data && cmd->data) {
-			if (evdi_copy_to_user_allow_partial(cmd->data, event->data, event->data_size)) {
+		payload_size = evdi_event_serialize_payload(event,
+			payload_buf, sizeof(payload_buf));
+		if (payload_size && cmd->data) {
+			if (evdi_copy_to_user_allow_partial(cmd->data,
+				payload_buf, payload_size)) {
 				evdi_event_free(event);
 				return -EFAULT;
 			}
@@ -538,8 +489,11 @@ int evdi_ioctl_poll(struct drm_device *dev, void *data, struct drm_file *file)
 	cmd->event = event->type;
 	cmd->poll_id = event->poll_id;
 
-	if (event->data && cmd->data) {
-		if (evdi_copy_to_user_allow_partial(cmd->data, event->data, event->data_size)) {
+	payload_size = evdi_event_serialize_payload(event, payload_buf,
+		sizeof(payload_buf));
+	if (payload_size && cmd->data) {
+		if (evdi_copy_to_user_allow_partial(cmd->data,
+			payload_buf, payload_size)) {
 			evdi_event_free(event);
 			return -EFAULT;
 		}
@@ -897,7 +851,6 @@ int evdi_ioctl_destroy_buff_callback(struct drm_device *dev, void *data, struct 
 	struct evdi_device *evdi = dev->dev_private;
 
 	EVDI_PERF_INC64(&evdi_perf.ioctl_calls[4]);
-	EVDI_PERF_INC64(&evdi_perf.callback_completions);
 
 	evdi_wakeup_pollers(evdi);
 
@@ -909,7 +862,6 @@ int evdi_ioctl_swap_callback(struct drm_device *dev, void *data, struct drm_file
 	struct evdi_device *evdi = dev->dev_private;
 
 	EVDI_PERF_INC64(&evdi_perf.ioctl_calls[5]);
-	EVDI_PERF_INC64(&evdi_perf.callback_completions);
 
 	evdi_wakeup_pollers(evdi);
 
@@ -962,38 +914,13 @@ static int evdi_queue_int_event(struct evdi_device *evdi,
 	enum poll_event_type type, int v, struct drm_file *owner)
 {
 	struct evdi_event *event;
-	void *data = NULL;
-	bool small = false;
-
-	data = evdi_small_payload_alloc(GFP_ATOMIC);
-	if (data) {
-		small = true;
-	} else {
-		data = kmalloc(sizeof(int), GFP_ATOMIC);
-		if (!data)
-			return -ENOMEM;
-	}
-
-	memcpy(data, &v, sizeof(int));
 
 	event = evdi_event_alloc(evdi, type,
-				 atomic_inc_return(&evdi->events.next_poll_id),
-				 data, sizeof(int), false, owner);
+		atomic_inc_return(&evdi->events.next_poll_id),
+		(void *)&v, sizeof(int), false, owner);
 
-	if (!event) {
-		if (small)
-			evdi_small_payload_free(data);
-		else
-			kfree(data);
-
+	if (!event)
 		return -ENOMEM;
-	}
-	if (small)
-		EVDI_PERF_INC64(&evdi_perf.event_payload_small_allocs);
-	else
-		EVDI_PERF_INC64(&evdi_perf.event_payload_heap_allocs);
-
-	event->payload_type = small ? 1 : 2;
 
 	evdi_event_queue(evdi, event);
 	return 0;
