@@ -136,9 +136,12 @@
 #define EVDI_INFLIGHT_POOL_MIN 64
 #define EVDI_GRALLOC_DATA_POOL_MIN 32
 
-#define EVDI_SMALL_PAYLOAD_MAX 64
-#define EVDI_SMALL_POOL_MIN 256
-#define EVDI_PCPU_SMALL_FREE_MAX 256
+#define EVDI_EVENT_PAYLOAD_MAX 32
+
+#define EVDI__CONCAT2(a, b)			a##b
+#define EVDI__CONCAT(a, b)			EVDI__CONCAT2(a, b)
+#define EVDI_BUILD_BUG_ON(cond)						\
+	typedef char EVDI__CONCAT(evdi_build_bug_on_, __LINE__)[(cond) ? -1 : 1] __maybe_unused
 
 #define LINDROID_MAX_CONNECTORS 5
 
@@ -165,14 +168,14 @@ struct evdi_event {
 	struct rcu_head rcu;
 	void *data;
 	size_t data_size;
+	u8 payload[EVDI_EVENT_PAYLOAD_MAX];
+	u32 payload_size;
 	struct evdi_event *next;
 	bool from_pool;
 	struct drm_file *owner;
 	struct llist_node llist;
 	struct evdi_device *evdi;
 	atomic_t freed;
-	u8 payload_type;
-	bool async;
 };
 
 struct evdi_inflight_req {
@@ -229,6 +232,15 @@ struct evdi_swap {
 	int display_id;
 };
 
+/*
+ * If any payload from future UAPI changes grows beyond the current 32 bytes,
+ * Just double EVDI_EVENT_PAYLOAD_MAX to 64 bytes.
+ */
+EVDI_BUILD_BUG_ON(sizeof(struct drm_evdi_gbm_create_buff) > EVDI_EVENT_PAYLOAD_MAX);
+EVDI_BUILD_BUG_ON(sizeof(struct drm_evdi_gbm_get_buff) > EVDI_EVENT_PAYLOAD_MAX);
+EVDI_BUILD_BUG_ON(sizeof(struct evdi_swap) > EVDI_EVENT_PAYLOAD_MAX);
+EVDI_BUILD_BUG_ON(sizeof(int) > EVDI_EVENT_PAYLOAD_MAX);
+
 struct evdi_display {
 	bool connected;
 	uint32_t width;
@@ -281,8 +293,6 @@ struct evdi_device {
 		atomic_t stopping;
 		atomic64_t events_queued;
 		atomic64_t events_dequeued;
-		atomic64_t pool_hits;
-		atomic64_t pool_misses;
 	} events;
 
 	struct mutex config_mutex;
@@ -487,18 +497,9 @@ struct evdi_perf_counters {
 	atomic64_t ioctl_calls[16];
 	atomic64_t event_queue_ops;
 	atomic64_t event_dequeue_ops;
-	atomic64_t pool_alloc_fast;
-	atomic64_t pool_alloc_slow;
+	atomic64_t allocs;
 	atomic64_t wakeup_count;
 	atomic64_t poll_cycles;
-	atomic64_t inflight_cache_hits;
-	atomic64_t callback_completions;
-	atomic64_t event_freelist_pop_hits;
-	atomic64_t event_freelist_pop_misses;
-	atomic64_t event_freelist_pushes;
-	atomic64_t event_payload_small_allocs;
-	atomic64_t event_payload_heap_allocs;
-	atomic64_t event_payload_none_allocs;
 	atomic64_t inflight_percpu_hits;
 	atomic64_t inflight_percpu_misses;
 };
