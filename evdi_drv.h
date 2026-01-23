@@ -154,10 +154,14 @@ struct evdi_gralloc_buf_user {
 	int data[EVDI_MAX_FDS + EVDI_MAX_INTS];
 };
 
+/* Must be +1 poll event types */
+#define EVDI_EVENT_TYPE_MAX 6
+
 struct evdi_event_pool {
 	struct kmem_cache *cache;
 	struct kmem_cache *drm_cache;
 	struct kmem_cache *inflight_cache;
+	struct kmem_cache *type_cache[EVDI_EVENT_TYPE_MAX];
 	mempool_t *inflight_pool;
 	mempool_t *gralloc_data_pool;
 };
@@ -166,6 +170,7 @@ struct evdi_event {
 	enum poll_event_type type;
 	int poll_id;
 	struct rcu_head rcu;
+	u8 cache_idx;
 	u8 payload[EVDI_EVENT_PAYLOAD_MAX];
 	u32 payload_size;
 	struct evdi_event *next;
