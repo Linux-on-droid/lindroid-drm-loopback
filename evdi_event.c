@@ -25,6 +25,34 @@ struct evdi_perf_counters evdi_perf;
 
 static DEFINE_PER_CPU(int, evdi_inflight_last_slot);
 
+static __always_inline bool evdi_swap_pending_for_file(struct evdi_device *evdi,
+						       struct drm_file *file)
+{
+	struct evdi_file_priv *priv;
+	int i;
+
+	if (unlikely(!evdi || !file))
+		return false;
+
+	priv = file->driver_priv;
+	if (unlikely(!priv))
+		return false;
+
+	for (i = 0; i < LINDROID_MAX_CONNECTORS; i++) {
+		u64 seq;
+
+		if (READ_ONCE(evdi->swap_mailbox[i].owner) != file)
+			continue;
+		seq = (u64)atomic64_read(&evdi->swap_mailbox[i].seq);
+		if (seq & 1)
+			continue;
+		if (seq != priv->last_swap_seq[i])
+			return true;
+	}
+
+	return false;
+}
+
 static void *evdi_inflight_req_pool_alloc(gfp_t gfp_mask, void *pool_data)
 {
 	return kvzalloc(sizeof(struct evdi_inflight_req), gfp_mask);
@@ -98,8 +126,18 @@ int evdi_event_system_init(void)
 	return 0;
 
 err:
-	mempool_destroy(global_event_pool.inflight_pool);
-	kmem_cache_destroy(global_event_pool.cache);
+	if (global_event_pool.gralloc_data_pool) {
+		mempool_destroy(global_event_pool.gralloc_data_pool);
+		global_event_pool.gralloc_data_pool = NULL;
+	}
+	if (global_event_pool.inflight_pool) {
+		mempool_destroy(global_event_pool.inflight_pool);
+		global_event_pool.inflight_pool = NULL;
+	}
+	if (global_event_pool.cache) {
+		kmem_cache_destroy(global_event_pool.cache);
+		global_event_pool.cache = NULL;
+	}
 	return -ENOMEM;
 }
 
@@ -121,6 +159,8 @@ void evdi_event_system_cleanup(void)
 
 int evdi_event_init(struct evdi_device *evdi)
 {
+	int i;
+
 	if (unlikely(!evdi))
 		return -EINVAL;
 
@@ -146,6 +186,13 @@ int evdi_event_init(struct evdi_device *evdi)
 	atomic64_set(&evdi->events.events_dequeued, 0);
 	atomic_set(&evdi->events.wake_pending, 0);
 
+	for (i = 0; i < LINDROID_MAX_CONNECTORS; i++) {
+		atomic64_set(&evdi->swap_mailbox[i].seq, 0);
+		atomic64_set(&evdi->swap_mailbox[i].payload, 0);
+		atomic_set(&evdi->swap_mailbox[i].poll_id, 0);
+		WRITE_ONCE(evdi->swap_mailbox[i].owner, NULL);
+	}
+
 	evdi_smp_wmb();
 
 	evdi_debug("Event system initialized for device %d", evdi->dev_index);
@@ -155,6 +202,7 @@ int evdi_event_init(struct evdi_device *evdi)
 void evdi_event_cleanup(struct evdi_device *evdi)
 {
 	struct evdi_event *event, *next;
+	int i;
 
 	if (unlikely(!evdi))
 		return;
@@ -164,7 +212,19 @@ void evdi_event_cleanup(struct evdi_device *evdi)
 
 	evdi_smp_wmb();
 
-	evdi->percpu_inflight = NULL;
+	for (i = 0; i < LINDROID_MAX_CONNECTORS; i++) {
+		atomic64_inc(&evdi->swap_mailbox[i].seq);
+		WRITE_ONCE(evdi->swap_mailbox[i].owner, NULL);
+		atomic_set(&evdi->swap_mailbox[i].poll_id, 0);
+		atomic64_set(&evdi->swap_mailbox[i].payload, 0);
+		evdi_smp_wmb();
+		atomic64_inc(&evdi->swap_mailbox[i].seq);
+	}
+
+	if (evdi->percpu_inflight) {
+		free_percpu(evdi->percpu_inflight);
+		evdi->percpu_inflight = NULL;
+	}
 
 	wake_up_all(&evdi->events.wait_queue);
 
@@ -192,7 +252,6 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 				   int poll_id,
 				   void *data,
 				   size_t data_size,
-				   bool async,
 				   struct drm_file *owner)
 {
 	struct evdi_event *event;
@@ -206,8 +265,6 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 
 	event->type = type;
 	event->poll_id = poll_id;
-	event->data = data;
-	event->data_size = data_size;
 	event->payload_size = 0;
 	if (data && data_size > 0) {
 		size_t copy_size = (data_size > EVDI_EVENT_PAYLOAD_MAX) ?
@@ -355,9 +412,6 @@ void evdi_event_free_immediate(struct evdi_event *event)
 void evdi_event_free_rcu(struct rcu_head *head)
 {
 	struct evdi_event *event = container_of(head, struct evdi_event, rcu);
-
-	WRITE_ONCE(event->data, NULL);
-	WRITE_ONCE(event->data_size, 0);
 
 	evdi_event_free_immediate(event);
 }
@@ -513,7 +567,7 @@ struct evdi_event *evdi_event_dequeue(struct evdi_device *evdi)
 		return NULL;
 
 found_one:
-	prefetch(event->data);
+	prefetch(&event->payload[0]);
 	empty = evdi_events_dec_and_test_empty(evdi);
 	atomic64_inc(&evdi->events.events_dequeued);
 	EVDI_PERF_INC64(&evdi_perf.event_dequeue_ops);
@@ -529,14 +583,27 @@ void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file)
 	struct evdi_event *event, *next;
 	struct evdi_event *new_head = NULL, *new_tail = NULL;
 	struct evdi_event **restore_events = NULL;
+	struct llist_node *llnode, *next_node = NULL;
 	int lf_removed = 0;
 	int sp_removed = 0;
 	int restore_count = 0;
 	int restore_capacity = 0;
-	int i;
+	int i, d, queue_estimate;
 
 	if (unlikely(!evdi || !file))
 		return;
+
+	for (d = 0; d < LINDROID_MAX_CONNECTORS; d++) {
+		if (READ_ONCE(evdi->swap_mailbox[d].owner) != file)
+			continue;
+
+		atomic64_inc(&evdi->swap_mailbox[d].seq);
+		WRITE_ONCE(evdi->swap_mailbox[d].owner, NULL);
+		atomic_set(&evdi->swap_mailbox[d].poll_id, 0);
+		atomic64_set(&evdi->swap_mailbox[d].payload, 0);
+		evdi_smp_wmb();
+		atomic64_inc(&evdi->swap_mailbox[d].seq);
+	}
 
 	if (atomic_read(&evdi->events.queue_size) == 0 &&
 	    llist_empty(&evdi->events.lockfree_head))
@@ -544,31 +611,28 @@ void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file)
 
 	atomic_set(&evdi->events.cleanup_in_progress, 1);
 
-	{
-		struct llist_node *llnode, *next_node = NULL;
-		int queue_estimate = atomic_read(&evdi->events.queue_size);
+	queue_estimate = atomic_read(&evdi->events.queue_size);
 
-		if (queue_estimate > 0) {
-			restore_capacity = queue_estimate + 64;
-			restore_events = kmalloc_array(restore_capacity, 
-						sizeof(struct evdi_event *), GFP_KERNEL);
+	if (queue_estimate > 0) {
+		restore_capacity = queue_estimate + 64;
+		restore_events = kmalloc_array(restore_capacity,
+					sizeof(struct evdi_event *), GFP_KERNEL);
+	}
+
+	llnode = llist_del_all(&evdi->events.lockfree_head);
+
+	while (llnode) {
+		event = llist_entry(llnode, struct evdi_event, llist);
+		next_node = llnode->next;
+
+		if (event->owner == file) {
+			lf_removed++;
+			atomic_dec(&evdi->events.queue_size);
+			call_rcu(&event->rcu, evdi_event_free_rcu);
+		} else if (restore_events && restore_count < restore_capacity) {
+			restore_events[restore_count++] = event;
 		}
-
-		llnode = llist_del_all(&evdi->events.lockfree_head);
-
-		while (llnode) {
-			event = llist_entry(llnode, struct evdi_event, llist);
-			next_node = llnode->next;
-
-			if (event->owner == file) {
-				lf_removed++;
-				atomic_dec(&evdi->events.queue_size);
-				call_rcu(&event->rcu, evdi_event_free_rcu);
-			} else if (restore_events && restore_count < restore_capacity) {
-				restore_events[restore_count++] = event;
-			}
-			llnode = next_node;
-		}
+		llnode = next_node;
 	}
 	if (restore_events) {
 		for (i = 0; i < restore_count; i++) {
@@ -638,6 +702,11 @@ int evdi_event_wait(struct evdi_device *evdi, struct drm_file *file)
 
 		evdi_smp_mb();
 		if (atomic_read(&evdi->events.queue_size) > 0) {
+			ret = 0;
+			break;
+		}
+
+		if (evdi_swap_pending_for_file(evdi, file)) {
 			ret = 0;
 			break;
 		}

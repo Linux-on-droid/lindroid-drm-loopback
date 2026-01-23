@@ -125,6 +125,7 @@ static int evdi_driver_open(struct drm_device *dev, struct drm_file *file)
 #else
 	idr_init(&priv->buffers);
 #endif
+	priv->swap_rr = 0;
 	file->driver_priv = priv;
 
 	return 0;
