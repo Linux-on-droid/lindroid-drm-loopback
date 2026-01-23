@@ -68,8 +68,6 @@ static void *evdi_gralloc_data_alloc(gfp_t gfp_mask, void *pool_data)
 	struct evdi_gralloc_data *gralloc;
 	
 	gralloc = kvzalloc(sizeof(struct evdi_gralloc_data), gfp_mask);
-	if (gralloc)
-		atomic_set(&gralloc->is_kvblock, 0);
 
 	return gralloc;
 }
@@ -306,36 +304,26 @@ static void evdi_inflight_req_release(struct kref *kref)
 		container_of(kref, struct evdi_inflight_req, refcount);
 	struct evdi_percpu_inflight *percpu_req;
 	struct evdi_gralloc_data *gralloc;
-	int i, slot;
+	int i, nfd, slot;
 
 	if (atomic_xchg(&req->freed, 1))
 		return;
 
 	gralloc = req->reply.get_buf.gralloc_buf.gralloc;
 	if (gralloc) {
-		if (gralloc->data_files) {
-			for (i = 0; i < gralloc->numFds; i++) {
-				if (gralloc->data_files[i]) {
-					fput(gralloc->data_files[i]);
-					gralloc->data_files[i] = NULL;
-				}
+		nfd = gralloc->numFds;
+		if (nfd < 0)
+			nfd = 0;
+		else if (nfd > EVDI_MAX_FDS)
+			nfd = EVDI_MAX_FDS;
+
+		for (i = 0; i < nfd; i++) {
+			if (gralloc->data_files[i]) {
+				fput(gralloc->data_files[i]);
+				gralloc->data_files[i] = NULL;
 			}
 		}
-		if (atomic_read(&gralloc->is_kvblock)) {
-			gralloc->data_files = NULL;
-			gralloc->data_ints = NULL;
-			kvfree(gralloc);
-		} else {
-			if (gralloc->data_files) {
-				kvfree(gralloc->data_files);
-				gralloc->data_files = NULL;
-			}
-			if (gralloc->data_ints) {
-				kvfree(gralloc->data_ints);
-				gralloc->data_ints = NULL;
-			}
-			mempool_free(gralloc, global_event_pool.gralloc_data_pool);
-		}
+		mempool_free(gralloc, global_event_pool.gralloc_data_pool);
 		req->reply.get_buf.gralloc_buf.gralloc = NULL;
 	}
 	if (atomic_read(&req->from_percpu)) {

@@ -130,8 +130,8 @@
 
 #define EVDI_WAIT_TIMEOUT	msecs_to_jiffies(5000)
 
-#define EVDI_MAX_FDS   16
-#define EVDI_MAX_INTS  64
+#define EVDI_MAX_FDS   32
+#define EVDI_MAX_INTS  128
 #define EVDI_GRALLOC_POOL_MIN 32
 #define EVDI_INFLIGHT_POOL_MIN 64
 #define EVDI_GRALLOC_DATA_POOL_MIN 32
@@ -205,9 +205,8 @@ struct evdi_gralloc_data {
 	int version;
 	int numFds;
 	int numInts;
-	struct file **data_files;
-	int *data_ints;
-	atomic_t is_kvblock;
+	struct file *data_files[EVDI_MAX_FDS];
+	int data_ints[EVDI_MAX_INTS];
 };
 
 struct evdi_gem_object {
