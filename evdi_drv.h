@@ -130,8 +130,8 @@
 
 #define EVDI_WAIT_TIMEOUT	msecs_to_jiffies(5000)
 
-#define EVDI_MAX_FDS   16
-#define EVDI_MAX_INTS  64
+#define EVDI_MAX_FDS   32
+#define EVDI_MAX_INTS  128
 #define EVDI_GRALLOC_POOL_MIN 32
 #define EVDI_INFLIGHT_POOL_MIN 64
 #define EVDI_GRALLOC_DATA_POOL_MIN 32
@@ -166,8 +166,6 @@ struct evdi_event {
 	enum poll_event_type type;
 	int poll_id;
 	struct rcu_head rcu;
-	void *data;
-	size_t data_size;
 	u8 payload[EVDI_EVENT_PAYLOAD_MAX];
 	u32 payload_size;
 	struct evdi_event *next;
@@ -207,9 +205,8 @@ struct evdi_gralloc_data {
 	int version;
 	int numFds;
 	int numInts;
-	struct file **data_files;
-	int *data_ints;
-	atomic_t is_kvblock;
+	struct file *data_files[EVDI_MAX_FDS];
+	int data_ints[EVDI_MAX_INTS];
 };
 
 struct evdi_gem_object {
@@ -231,6 +228,18 @@ struct evdi_swap {
 	int id;
 	int display_id;
 };
+
+struct evdi_swap_mailbox {
+	atomic64_t	seq;
+	atomic64_t	payload; /* (u32)id << 32 | (u32)display_id */
+	atomic_t	poll_id;
+	struct drm_file	*owner;
+};
+
+static __always_inline u64 evdi_swap_pack(int id, int display_id)
+{
+	return ((u64)(u32)id << 32) | (u64)(u32)display_id;
+}
 
 /*
  * If any payload from future UAPI changes grows beyond the current 32 bytes,
@@ -261,6 +270,8 @@ struct evdi_file_priv {
 #else
 	struct idr buffers;
 #endif
+	u64 last_swap_seq[LINDROID_MAX_CONNECTORS];
+	u8 swap_rr;
 };
 
 struct evdi_device {
@@ -294,6 +305,8 @@ struct evdi_device {
 		atomic64_t events_queued;
 		atomic64_t events_dequeued;
 	} events;
+
+	struct evdi_swap_mailbox swap_mailbox[LINDROID_MAX_CONNECTORS];
 
 	struct mutex config_mutex;
 
@@ -368,7 +381,6 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 				   int poll_id,
 				   void *data,
 				   size_t data_size,
-				   bool async,
 				   struct drm_file *owner);
 void evdi_event_free(struct evdi_event *event);
 void evdi_event_queue(struct evdi_device *evdi, struct evdi_event *event);
@@ -498,6 +510,8 @@ struct evdi_perf_counters {
 	atomic64_t event_queue_ops;
 	atomic64_t event_dequeue_ops;
 	atomic64_t allocs;
+	atomic64_t swap_updates;
+	atomic64_t swap_delivered;
 	atomic64_t wakeup_count;
 	atomic64_t poll_cycles;
 	atomic64_t inflight_percpu_hits;

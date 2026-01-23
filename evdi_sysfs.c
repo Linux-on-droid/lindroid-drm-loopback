@@ -153,6 +153,8 @@ static ssize_t stats_show(struct device *dev, struct device_attribute *attr, cha
 	"  Queue operations: %lld\n"
 	"  Dequeue operations: %lld\n"
 	"  Event allocations: %lld\n"
+	"  Swap updates: %lld\n"
+	"  Swap delivered: %lld\n"
 	"  Inflight per-CPU hits: %lld\n"
 	"  Inflight per-CPU misses: %lld\n"
 	"=====================================\n",
@@ -168,6 +170,8 @@ static ssize_t stats_show(struct device *dev, struct device_attribute *attr, cha
 	(long long)atomic64_read(&evdi_perf.event_queue_ops),
 	(long long)atomic64_read(&evdi_perf.event_dequeue_ops),
 	(long long)atomic64_read(&evdi_perf.allocs),
+	(long long)atomic64_read(&evdi_perf.swap_updates),
+	(long long)atomic64_read(&evdi_perf.swap_delivered),
 	(long long)atomic64_read(&evdi_perf.inflight_percpu_hits),
 	(long long)atomic64_read(&evdi_perf.inflight_percpu_misses));
 }
