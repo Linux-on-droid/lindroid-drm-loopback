@@ -172,6 +172,9 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 #ifdef EVDI_HAVE_XARRAY
 	{
 		u32 xid;
+#ifndef EVDI_HAVE_XA_ALLOC_CYCLIC
+		u32 start_id;
+#endif
 		int ret;
 #ifdef EVDI_HAVE_XA_ALLOC_CYCLIC
 		xid = READ_ONCE(evdi->inflight_next_id);
@@ -200,7 +203,7 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 		id = (int)xid;
 #else
 		xid = 0;
-		u32 start_id = READ_ONCE(evdi->inflight_next_id);
+		start_id = READ_ONCE(evdi->inflight_next_id);
 		if (unlikely(!start_id))
 			start_id = 1;
 		ret = xa_alloc(&evdi->inflight_xa, &xid, req,
@@ -346,7 +349,7 @@ static inline size_t evdi_event_serialize_payload(struct evdi_event *e,
 	if (unlikely(!e || !out_buf || !out_buf_size))
 		return 0;
 
-	copy_size = min(e->payload_size, out_buf_size);
+	copy_size = min_t(size_t, e->payload_size, out_buf_size);
 	if (copy_size)
 		memcpy(out_buf, e->payload, copy_size);
 
@@ -771,11 +774,13 @@ static inline void evdi_file_track_buffer(struct drm_file *file, int id)
 	}
 #else
 	ret = xa_err(xa_store(&priv->buffers, id, xa_mk_value(1), GFP_KERNEL));
+	goto out_unlock;
 #endif
 #else
 	ret = idr_alloc(&priv->buffers, (void *)1, id, id + 1, GFP_KERNEL);
 	if (ret == id)
 		ret = 0;
+	goto out_unlock;
 #endif
 
 out_unlock:
@@ -814,9 +819,11 @@ static inline void evdi_file_untrack_buffer(struct drm_file *file, int id)
 	}
 #else
 	xa_erase(&priv->buffers, id);
+	goto out_unlock;
 #endif
 #else
 	idr_remove(&priv->buffers, id);
+	goto out_unlock;
 #endif
 
 out_unlock:
