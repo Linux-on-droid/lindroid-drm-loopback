@@ -772,11 +772,13 @@ static inline void evdi_file_track_buffer(struct drm_file *file, int id)
 	}
 #else
 	ret = xa_err(xa_store(&priv->buffers, id, xa_mk_value(1), GFP_KERNEL));
+	goto out_unlock;
 #endif
 #else
 	ret = idr_alloc(&priv->buffers, (void *)1, id, id + 1, GFP_KERNEL);
 	if (ret == id)
 		ret = 0;
+	goto out_unlock;
 #endif
 
 out_unlock:
@@ -815,9 +817,11 @@ static inline void evdi_file_untrack_buffer(struct drm_file *file, int id)
 	}
 #else
 	xa_erase(&priv->buffers, id);
+	goto out_unlock;
 #endif
 #else
 	idr_remove(&priv->buffers, id);
+	goto out_unlock;
 #endif
 
 out_unlock:
