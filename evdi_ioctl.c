@@ -172,7 +172,9 @@ static inline struct evdi_inflight_req *evdi_inflight_alloc(struct evdi_device *
 #ifdef EVDI_HAVE_XARRAY
 	{
 		u32 xid;
+#ifndef EVDI_HAVE_XA_ALLOC_CYCLIC
 		u32 start_id;
+#endif
 		int ret;
 #ifdef EVDI_HAVE_XA_ALLOC_CYCLIC
 		xid = READ_ONCE(evdi->inflight_next_id);
