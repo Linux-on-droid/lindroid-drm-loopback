@@ -347,7 +347,7 @@ static inline size_t evdi_event_serialize_payload(struct evdi_event *e,
 	if (unlikely(!e || !out_buf || !out_buf_size))
 		return 0;
 
-	copy_size = min(e->payload_size, out_buf_size);
+	copy_size = min_t(size_t, e->payload_size, out_buf_size);
 	if (copy_size)
 		memcpy(out_buf, e->payload, copy_size);
 
