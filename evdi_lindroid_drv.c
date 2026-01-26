@@ -75,8 +75,8 @@ static struct drm_driver evdi_driver = {
 #endif
 	.gem_prime_import = evdi_gem_prime_import,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
-	.prime_handle_to_fd = drm_gem_prime_handle_to_fd,
-	.prime_fd_to_handle = drm_gem_prime_fd_to_handle,
+	.prime_handle_to_fd = evdi_gem_prime_handle_to_fd,
+	.prime_fd_to_handle = evdi_gem_prime_fd_to_handle,
 #endif
 
 	.open = evdi_driver_open,
