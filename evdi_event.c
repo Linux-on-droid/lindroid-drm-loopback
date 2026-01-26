@@ -77,14 +77,45 @@ static void evdi_gralloc_data_free(void *element, void *pool_data)
 	kvfree(element);
 }
 
+static void evdi_event_destroy_caches(void)
+{
+	int i;
+
+	if (global_event_pool.cache) {
+		kmem_cache_destroy(global_event_pool.cache);
+		global_event_pool.cache = NULL;
+	}
+
+	for (i = 0; i < EVDI_EVENT_TYPE_MAX; i++) {
+		if (global_event_pool.type_cache[i]) {
+			kmem_cache_destroy(global_event_pool.type_cache[i]);
+			global_event_pool.type_cache[i] = NULL;
+		}
+	}
+}
+
 int evdi_event_system_init(void)
 {
+	char name[32];
+	int i;
+
 	global_event_pool.cache = kmem_cache_create("evdi_events",
 						   sizeof(struct evdi_event),
 						   0, SLAB_HWCACHE_ALIGN,
 						   NULL);
 	if (!global_event_pool.cache)
 		return -ENOMEM;
+
+	for (i = 0; i < EVDI_EVENT_TYPE_MAX; i++) {
+		snprintf(name, sizeof(name), "evdi_events_%d", i);
+		global_event_pool.type_cache[i] =
+			kmem_cache_create(name, sizeof(struct evdi_event),
+					  0, SLAB_HWCACHE_ALIGN, NULL);
+		if (!global_event_pool.type_cache[i]) {
+			evdi_event_destroy_caches();
+			return -ENOMEM;
+		}
+	}
 
 	memset(&evdi_perf, 0, sizeof(evdi_perf));
 	evdi_perf_on = false;
@@ -132,10 +163,7 @@ err:
 		mempool_destroy(global_event_pool.inflight_pool);
 		global_event_pool.inflight_pool = NULL;
 	}
-	if (global_event_pool.cache) {
-		kmem_cache_destroy(global_event_pool.cache);
-		global_event_pool.cache = NULL;
-	}
+	evdi_event_destroy_caches();
 	return -ENOMEM;
 }
 
@@ -147,10 +175,7 @@ void evdi_event_system_cleanup(void)
 	if (global_event_pool.inflight_pool)
 		mempool_destroy(global_event_pool.inflight_pool);
 
-	if (global_event_pool.cache) {
-		kmem_cache_destroy(global_event_pool.cache);
-		global_event_pool.cache = NULL;
-	}
+	evdi_event_destroy_caches();
 
 	evdi_debug("Event system cleaned up");
 }
@@ -253,13 +278,26 @@ struct evdi_event *evdi_event_alloc(struct evdi_device *evdi,
 				   struct drm_file *owner)
 {
 	struct evdi_event *event;
+	struct kmem_cache *cache = NULL;
+	u8 idx = 0xff;
 
-	event = kmem_cache_alloc(global_event_pool.cache, GFP_ATOMIC);
+	if (type >= 0 && type < EVDI_EVENT_TYPE_MAX)
+		cache = global_event_pool.type_cache[type];
+
+	if (!cache)
+		cache = global_event_pool.cache;
+
+	event = kmem_cache_alloc(cache, GFP_ATOMIC);
 	if (unlikely(!event))
 		return NULL;
 
+	if (cache != global_event_pool.cache && type >= 0 &&
+	    type < EVDI_EVENT_TYPE_MAX)
+		idx = (u8)type;
+
 	EVDI_PERF_INC64(&evdi_perf.allocs);
 	event->from_pool = true;
+	event->cache_idx = idx;
 
 	event->type = type;
 	event->poll_id = poll_id;
@@ -388,13 +426,22 @@ struct evdi_inflight_req *evdi_inflight_req_alloc(struct evdi_device *evdi)
 
 void evdi_event_free_immediate(struct evdi_event *event)
 {
+	struct kmem_cache *cache = NULL;
+
 	if (!event)
 		return;
 
-	if (likely(event->from_pool && global_event_pool.cache))
-		kmem_cache_free(global_event_pool.cache, event);
-	else
+	if (likely(event->from_pool)) {
+		if (event->cache_idx < EVDI_EVENT_TYPE_MAX)
+			cache = global_event_pool.type_cache[event->cache_idx];
+
+		if (!cache)
+			cache = global_event_pool.cache;
+
+		kmem_cache_free(cache, event);
+	} else {
 		kfree(event);
+	}
 }
 
 void evdi_event_free_rcu(struct rcu_head *head)
