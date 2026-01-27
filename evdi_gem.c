@@ -190,24 +190,6 @@ int evdi_dumb_create(struct drm_file *file, struct drm_device *dev,
 	return evdi_gem_create(file, dev, args->size, &args->handle);
 }
 
-int evdi_gem_prime_handle_to_fd(struct drm_device *dev,
-                               struct drm_file *file_priv, uint32_t handle,
-                               uint32_t flags,
-                               int *prime_fd)
-{
-	// Do we want to clone content or not? Handle is already an fd
-	*prime_fd = handle;
-	return 0;
-}
-
-int evdi_gem_prime_fd_to_handle(struct drm_device *dev,
-                               struct drm_file *file_priv, int prime_fd,
-                               uint32_t *handle)
-{
-	*handle = prime_fd;
-	return 0;
-}
-
 int evdi_drm_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	int ret;

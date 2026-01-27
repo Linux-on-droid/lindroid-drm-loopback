@@ -401,8 +401,6 @@ void evdi_small_payload_free(void *ptr);
 struct evdi_gem_object *evdi_gem_alloc_object(struct drm_device *dev, size_t size);
 int evdi_gem_create(struct drm_file *file, struct drm_device *dev, uint64_t size, uint32_t *handle_p);
 int evdi_dumb_create(struct drm_file *file, struct drm_device *dev, struct drm_mode_create_dumb *args);
-int evdi_gem_prime_handle_to_fd(struct drm_device *dev, struct drm_file *file_priv, uint32_t handle, uint32_t flags, int *prime_fd);
-int evdi_gem_prime_fd_to_handle(struct drm_device *dev, struct drm_file *file_priv, int prime_fd, uint32_t *handle);
 int evdi_drm_gem_mmap(struct file *filp, struct vm_area_struct *vma);
 void evdi_gem_free_object(struct drm_gem_object *gem_obj);
 uint32_t evdi_gem_object_handle_lookup(struct drm_file *filp, struct drm_gem_object *obj);
