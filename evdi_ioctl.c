@@ -1032,12 +1032,9 @@ int evdi_ioctl_gbm_del_buff(struct drm_device *dev, void *data, struct drm_file 
 {
 	struct evdi_device *evdi = dev->dev_private;
 	struct drm_evdi_gbm_del_buff *cmd = data;
-	struct drm_file *client;
 	long ret;
 
-	client = READ_ONCE(evdi->drm_client);
-
-	ret = evdi_queue_destroy_event(evdi, cmd->id, client ? client : file);
+	ret = evdi_queue_destroy_event(evdi, cmd->id, file);
 	if (!ret)
 		evdi_file_untrack_buffer(file, cmd->id);
 

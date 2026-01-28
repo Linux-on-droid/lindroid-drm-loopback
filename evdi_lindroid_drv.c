@@ -135,9 +135,6 @@ static void evdi_driver_postclose(struct drm_device *dev, struct drm_file *file)
 {
 	struct evdi_device *evdi = dev->dev_private;
 	struct evdi_file_priv *priv = file->driver_priv;
-	struct drm_file *client;
-	bool send_destroy = false;
-	void *entry;
 
 	if (unlikely(!evdi))
 		return;
@@ -152,46 +149,17 @@ static void evdi_driver_postclose(struct drm_device *dev, struct drm_file *file)
 
 	evdi_event_cleanup_file(evdi, file);
 
-	client = READ_ONCE(evdi->drm_client);
-	send_destroy = (client && client != file);
-
 	if (priv) {
 		mutex_lock(&priv->lock);
 #ifdef EVDI_HAVE_XARRAY
 #ifdef EVDI_HAVE_XA_ALLOC_CYCLIC
-		{
-			unsigned long handle;
-
-			xa_for_each(&priv->handle_to_bufid, handle, entry) {
-				if (send_destroy)
-					evdi_queue_destroy_event(evdi,
-								 (int)xa_to_value(entry),
-								 client);
-			}
-			xa_destroy(&priv->handle_to_bufid);
-			xa_destroy(&priv->bufid_to_handle);
-		}
+		xa_destroy(&priv->handle_to_bufid);
+		xa_destroy(&priv->bufid_to_handle);
 #else
-		{
-			unsigned long id;
-
-			xa_for_each(&priv->buffers, id, entry) {
-				if (send_destroy)
-					evdi_queue_destroy_event(evdi, (int)id, client);
-			}
-			xa_destroy(&priv->buffers);
-		}
+		xa_destroy(&priv->buffers);
 #endif
 #else
-		{
-			int id;
-
-			idr_for_each_entry(&priv->buffers, entry, id) {
-				if (send_destroy)
-					evdi_queue_destroy_event(evdi, id, client);
-			}
-			idr_destroy(&priv->buffers);
-		}
+		idr_destroy(&priv->buffers);
 #endif
 		mutex_unlock(&priv->lock);
 
