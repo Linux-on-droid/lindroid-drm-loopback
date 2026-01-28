@@ -1094,7 +1094,7 @@ int evdi_queue_swap_event(struct evdi_device *evdi,
 	atomic64_inc(&mb->seq); // even
 
 	EVDI_PERF_INC64(&evdi_perf.swap_updates);
-	evdi_wakeup_pollers(evdi);
+	wake_up_interruptible(&evdi->events.wait_queue);
 	return 0;
 }
 
