@@ -403,33 +403,24 @@ static int evdi_export_id_as_fd(int id, uint32_t flags, int *out_fd)
 
 static int evdi_read_id_from_fd(int fd_u32, int *out_id)
 {
-	struct fd f;
 	loff_t pos = 0;
 	ssize_t rd;
 	int id;
+	struct file *memfd_file;
 
 	if (!out_id)
 		return -EINVAL;
 	if (fd_u32 <= 0 || fd_u32 > INT_MAX)
 		return -EBADF;
 
-	f = fdget(fd_u32);
-	if (!f.file)
-		return -EBADF;
-
-	if (!S_ISREG(file_inode(f.file)->i_mode)) {
-		fdput(f);
+	memfd_file = fget(fd_u32);
+	if (!memfd_file)
 		return -EINVAL;
-	}
 
-	rd = kernel_read(f.file, &id, sizeof(id), &pos);
-	fdput(f);
+	rd = kernel_read(memfd_file, &id, sizeof(id), &pos);
 	if (rd != sizeof(id))
-		return (rd < 0) ? (int)rd : -EIO;
-
-	if (id <= 0)
 		return -EINVAL;
-
+	printk("Got handle id: %d from fd: %d\n", id, fd_u32);
 	*out_id = id;
 	return 0;
 }
