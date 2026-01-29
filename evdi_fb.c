@@ -36,8 +36,7 @@ static void evdi_fb_destroy(struct drm_framebuffer *fb)
 
 	drm_framebuffer_cleanup(fb);
 
-	if (evdi && efb->gralloc_buf_id)
-		evdi_queue_destroy_event(evdi, efb->gralloc_buf_id, efb->owner);
+	// Closing fb isnt same as destroying buffer, so DONT enque destroy
 
 	kfree(efb);
 }
