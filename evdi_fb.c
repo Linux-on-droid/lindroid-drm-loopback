@@ -195,16 +195,7 @@ struct drm_framebuffer *evdi_fb_user_fb_create(struct drm_device *dev,
 	efb->obj = bo;
 	efb->owner = file;
 	efb->active = true;
-	efb->gralloc_buf_id = evdi_fb_extract_gralloc_id(mode_cmd);
-	if (!efb->gralloc_buf_id) {
-		memfd_file = fget(mode_cmd->handles[0]);
-		if (memfd_file) {
-			bytes_read = kernel_read(memfd_file, &id, sizeof(id), &pos);
-			if (bytes_read == sizeof(id))
-				efb->gralloc_buf_id = id;
-			fput(memfd_file);
-		}
-	}
+	efb->gralloc_buf_id = mode_cmd->handles[0];
 
 	ret = evdi_fb_init_core(dev, efb, mode_cmd);
 	if (ret) {
