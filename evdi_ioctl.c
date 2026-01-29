@@ -995,6 +995,24 @@ int evdi_ioctl_swap_callback(struct drm_device *dev, void *data, struct drm_file
 {
 	struct evdi_device *evdi = dev->dev_private;
 
+	struct drm_evdi_swap_callback *cb = data;
+	int d;
+
+	if (unlikely(!evdi || !cb))
+		return -EINVAL;
+
+	for (d = 0; d < LINDROID_MAX_CONNECTORS; d++) {
+		if (!atomic_read(&evdi->swap_pending[d]))
+			continue;
+		if (atomic_read(&evdi->swap_pending_pollid[d]) != cb->poll_id)
+			continue;
+
+		atomic_set(&evdi->swap_pending_pollid[d], 0);
+		atomic_set(&evdi->swap_pending[d], 0);
+		wake_up_interruptible(&evdi->swap_ack_waitq);
+		break;
+	}
+
 	EVDI_PERF_INC64(&evdi_perf.ioctl_calls[5]);
 
 	evdi_wakeup_pollers(evdi);
@@ -1072,16 +1090,24 @@ int evdi_queue_swap_event(struct evdi_device *evdi,
 	if (unlikely(atomic_read(&evdi->events.stopping)))
 		return -ENODEV;
 
+	/* Do not overwrite an un-ACKed swap */
+	if (atomic_cmpxchg(&evdi->swap_pending[display_id], 0, 1) != 0)
+		return -EBUSY;
+
 	client = READ_ONCE(evdi->drm_client);
 	if (client)
 		owner = client;
 
-	if (unlikely(!owner))
+	if (unlikely(!owner)) {
+		atomic_set(&evdi->swap_pending[display_id], 0);
 		return -ENODEV;
+	}
 
 	mb = &evdi->swap_mailbox[display_id];
 	payload = evdi_swap_pack(id, display_id);
 	poll_id = atomic_inc_return(&evdi->events.next_poll_id);
+
+	atomic_set(&evdi->swap_pending_pollid[display_id], poll_id);
 
 	atomic64_inc(&mb->seq); // odd
 	WRITE_ONCE(mb->owner, owner);

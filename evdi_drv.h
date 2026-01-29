@@ -29,6 +29,7 @@
 #include <linux/percpu.h>
 #include <linux/llist.h>
 #include <linux/file.h>
+#include <linux/types.h>
 #include <linux/mempool.h>
 #include <linux/uaccess.h>
 #include <linux/jump_label.h>
@@ -312,6 +313,10 @@ struct evdi_device {
 	} events;
 
 	struct evdi_swap_mailbox swap_mailbox[LINDROID_MAX_CONNECTORS];
+
+	wait_queue_head_t swap_ack_waitq;
+	atomic_t swap_pending[LINDROID_MAX_CONNECTORS];
+	atomic_t swap_pending_pollid[LINDROID_MAX_CONNECTORS];
 
 	struct mutex config_mutex;
 

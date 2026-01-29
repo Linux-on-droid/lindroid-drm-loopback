@@ -52,6 +52,9 @@ static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 	struct drm_framebuffer *fb = state ? state->fb : NULL;
 	struct evdi_device *evdi = pipe->plane.dev->dev_private;
 	struct evdi_framebuffer *efb;
+	int slot;
+	unsigned long timeout;
+	long w;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 19, 0)
 	struct drm_pending_vblank_event *vblank_ev;
 	struct drm_device *ddev;
@@ -71,12 +74,32 @@ static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 	if (!state || !fb)
 		return;
 
+	slot = evdi_connector_slot(evdi, pipe->connector);
+
+	/* Backpressure: wait for userspace to ACK the previous swap */
+	//TODO: maybe remove timeout?
+	timeout = msecs_to_jiffies(250);
+	if (atomic_read(&evdi->swap_pending[slot])) {
+		w = wait_event_interruptible_timeout(
+			evdi->swap_ack_waitq,
+			!atomic_read(&evdi->swap_pending[slot]) ||
+				atomic_read(&evdi->events.stopping) ||
+				!READ_ONCE(evdi->drm_client),
+			timeout);
+
+		if (w == 0) {
+			/* Drop backpressure to avoid stalls. */
+			atomic_set(&evdi->swap_pending_pollid[slot], 0);
+			atomic_set(&evdi->swap_pending[slot], 0);
+		}
+	}
+
 	efb = to_evdi_fb(fb);
 
 	if (efb && efb->owner && efb->gralloc_buf_id)
 		evdi_queue_swap_event(evdi,
 				      efb->gralloc_buf_id,
-				      evdi_connector_slot(evdi, pipe->connector),
+				      slot,
 				      efb->owner);
 
 	if (unlikely(!READ_ONCE(evdi->drm_client)))

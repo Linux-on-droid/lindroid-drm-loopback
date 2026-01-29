@@ -12,6 +12,7 @@
 #include "evdi_drv.h"
 #include <linux/platform_device.h>
 #include <linux/of.h>
+#include <linux/wait.h>
 
 extern int evdi_event_system_init(void);
 extern void evdi_event_system_cleanup(void);
@@ -186,6 +187,12 @@ int evdi_device_init(struct evdi_device *evdi, struct platform_device *pdev)
 	evdi->drm_client = NULL;
 
 	mutex_init(&evdi->config_mutex);
+
+	init_waitqueue_head(&evdi->swap_ack_waitq);
+	for (i = 0; i < LINDROID_MAX_CONNECTORS; i++) {
+		atomic_set(&evdi->swap_pending[i], 0);
+		atomic_set(&evdi->swap_pending_pollid[i], 0);
+	}
 	
 #ifdef EVDI_HAVE_XARRAY
 	xa_init_flags(&evdi->file_xa, XA_FLAGS_ALLOC);

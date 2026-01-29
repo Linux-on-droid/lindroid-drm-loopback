@@ -29,7 +29,6 @@ static inline void evdi_gem_object_put_local(struct drm_gem_object *obj)
 static void evdi_fb_destroy(struct drm_framebuffer *fb)
 {
 	struct evdi_framebuffer *efb = to_evdi_fb(fb);
-	struct evdi_device *evdi = fb->dev ? fb->dev->dev_private : NULL;
 
 	if (efb->obj)
 		evdi_gem_object_put_local(&efb->obj->base);
@@ -113,18 +112,6 @@ static int evdi_fb_calc_size(const struct drm_mode_fb_cmd2 *mode_cmd,
 	return 0;
 }
 
-static int evdi_fb_extract_gralloc_id(const struct drm_mode_fb_cmd2 *mode_cmd)
-{
-#if (KERNEL_VERSION(4, 15, 0) <= LINUX_VERSION_CODE)
-	if (mode_cmd->modifier[0])
-		return (int)(mode_cmd->modifier[0] & 0x7fffffff);
-#endif
-	if (mode_cmd->handles[0] > 0xFFFF)
-		return (int)mode_cmd->handles[0];
-
-	return 0;
-}
-
 static struct evdi_gem_object *evdi_fb_acquire_bo(struct drm_device *dev,
 						  struct drm_file *file,
 						  const struct drm_mode_fb_cmd2 *mode_cmd)
@@ -176,10 +163,7 @@ struct drm_framebuffer *evdi_fb_user_fb_create(struct drm_device *dev,
 {
 	struct evdi_framebuffer *efb;
 	struct evdi_gem_object *bo;
-	int ret, id = 0;
-	struct file *memfd_file;
-	loff_t pos = 0;
-	ssize_t bytes_read;
+	int ret;
 
 	bo = evdi_fb_acquire_bo(dev, file, mode_cmd);
 	if (!bo)
