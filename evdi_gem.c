@@ -420,7 +420,7 @@ static int evdi_read_id_from_fd(int fd_u32, int *out_id)
 	rd = kernel_read(memfd_file, &id, sizeof(id), &pos);
 	if (rd != sizeof(id))
 		return -EINVAL;
-	printk("Got handle id: %d from fd: %d\n", id, fd_u32);
+	evdi_debug("Got handle id: %d from fd: %d\n", id, fd_u32);
 	*out_id = id;
 	return 0;
 }
