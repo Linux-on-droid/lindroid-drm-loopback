@@ -804,6 +804,8 @@ static inline void evdi_file_track_buffer(struct drm_file *file, int id)
 {
 	struct evdi_file_priv *priv;
 	int ret = 0;
+	u32 handle = 0;
+	void *entry;
 
 	if (unlikely(!file || id <= 0))
 		return;
@@ -816,18 +818,46 @@ static inline void evdi_file_track_buffer(struct drm_file *file, int id)
 
 #ifdef EVDI_HAVE_XARRAY
 #ifdef EVDI_HAVE_XA_ALLOC_CYCLIC
+	entry = xa_load(&priv->bufid_to_handle, id);
+	if (entry)
+		goto out_unlock;
+
+	ret = xa_alloc_cyclic(&priv->handle_to_bufid, &handle,
+			      xa_mk_value((unsigned long)id),
+			      XA_LIMIT(1, INT_MAX),
+			      &priv->next_handle, GFP_KERNEL);
+	if (ret)
+		goto out_unlock;
+
+	ret = xa_err(xa_store(&priv->bufid_to_handle, id,
+			      xa_mk_value((unsigned long)handle),
+			      GFP_KERNEL));
+	if (ret) {
+		xa_erase(&priv->handle_to_bufid, (unsigned long)handle);
+		goto out_unlock;
+	}
+#else
 	{
-		void *entry;
-		u32 handle = 0;
+		u32 start;
 
 		entry = xa_load(&priv->bufid_to_handle, id);
 		if (entry)
 			goto out_unlock;
 
-		ret = xa_alloc_cyclic(&priv->handle_to_bufid, &handle,
-				      xa_mk_value((unsigned long)id),
-				      XA_LIMIT(1, INT_MAX),
-				      &priv->next_handle, GFP_KERNEL);
+		start = READ_ONCE(priv->next_handle);
+		if (unlikely(!start))
+			start = 1;
+
+		handle = start;
+		ret = xa_alloc(&priv->handle_to_bufid, &handle,
+			       xa_mk_value((unsigned long)id),
+			       XA_LIMIT(start, INT_MAX), GFP_KERNEL);
+		if (ret == -EBUSY && start > 1) {
+			handle = 1;
+			ret = xa_alloc(&priv->handle_to_bufid, &handle,
+				       xa_mk_value((unsigned long)id),
+				       XA_LIMIT(1, INT_MAX), GFP_KERNEL);
+		}
 		if (ret)
 			goto out_unlock;
 
@@ -838,16 +868,48 @@ static inline void evdi_file_track_buffer(struct drm_file *file, int id)
 			xa_erase(&priv->handle_to_bufid, (unsigned long)handle);
 			goto out_unlock;
 		}
+
+		WRITE_ONCE(priv->next_handle, handle + 1);
 	}
-#else
-	ret = xa_err(xa_store(&priv->buffers, id, xa_mk_value(1), GFP_KERNEL));
-	goto out_unlock;
 #endif
 #else
-	ret = idr_alloc(&priv->buffers, (void *)1, id, id + 1, GFP_KERNEL);
-	if (ret == id)
+	{
+		int start;
+		int hret;
+
+		entry = idr_find(&priv->bufid_to_handle, id);
+		if (entry)
+			goto out_unlock;
+
+		start = (int)READ_ONCE(priv->next_handle);
+		if (start <= 0)
+			start = 1;
+
+		hret = idr_alloc(&priv->handle_to_bufid, (void *)(uintptr_t)id,
+				 start, INT_MAX, GFP_KERNEL);
+		if (hret == -ENOSPC && start > 1)
+			hret = idr_alloc(&priv->handle_to_bufid,
+					 (void *)(uintptr_t)id,
+					 1, INT_MAX, GFP_KERNEL);
+		if (hret < 0) {
+			ret = hret;
+			goto out_unlock;
+		}
+
+		handle = (u32)hret;
+		ret = idr_alloc(&priv->bufid_to_handle,
+				(void *)(uintptr_t)handle,
+				id, id + 1, GFP_KERNEL);
+		if (ret != id) {
+			if (ret >= 0)
+				ret = -EINVAL;
+			idr_remove(&priv->handle_to_bufid, handle);
+			goto out_unlock;
+		}
+
+		WRITE_ONCE(priv->next_handle, handle + 1);
 		ret = 0;
-	goto out_unlock;
+	}
 #endif
 
 out_unlock:
@@ -860,6 +922,9 @@ out_unlock:
 static inline void evdi_file_untrack_buffer(struct drm_file *file, int id)
 {
 	struct evdi_file_priv *priv;
+	void *entry;
+	u32 handle;
+
 
 	if (unlikely(!file || id <= 0))
 		return;
@@ -872,25 +937,30 @@ static inline void evdi_file_untrack_buffer(struct drm_file *file, int id)
 
 #ifdef EVDI_HAVE_XARRAY
 #ifdef EVDI_HAVE_XA_ALLOC_CYCLIC
-	{
-		void *entry;
-		u32 handle;
+	entry = xa_load(&priv->bufid_to_handle, id);
+	if (!entry)
+		goto out_unlock;
 
-		entry = xa_load(&priv->bufid_to_handle, id);
-		if (!entry)
-			goto out_unlock;
-
-		handle = (u32)xa_to_value(entry);
-		xa_erase(&priv->bufid_to_handle, id);
-		xa_erase(&priv->handle_to_bufid, (unsigned long)handle);
-	}
+	handle = (u32)xa_to_value(entry);
+	xa_erase(&priv->bufid_to_handle, id);
+	xa_erase(&priv->handle_to_bufid, (unsigned long)handle);
 #else
-	xa_erase(&priv->buffers, id);
-	goto out_unlock;
+	entry = xa_load(&priv->bufid_to_handle, id);
+	if (!entry)
+		goto out_unlock;
+
+	handle = (u32)xa_to_value(entry);
+	xa_erase(&priv->bufid_to_handle, id);
+	xa_erase(&priv->handle_to_bufid, (unsigned long)handle);
 #endif
 #else
-	idr_remove(&priv->buffers, id);
-	goto out_unlock;
+	entry = idr_find(&priv->bufid_to_handle, id);
+	if (!entry)
+		goto out_unlock;
+
+	handle = (u32)(uintptr_t)entry;
+	idr_remove(&priv->bufid_to_handle, id);
+	idr_remove(&priv->handle_to_bufid, handle);
 #endif
 
 out_unlock:

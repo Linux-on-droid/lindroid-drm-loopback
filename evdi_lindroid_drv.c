@@ -77,6 +77,11 @@ static struct drm_driver evdi_driver = {
 #if KERNEL_VERSION(5, 9, 0) <= LINUX_VERSION_CODE
 	.gem_create_object = NULL,
 #endif
+#if KERNEL_VERSION(5, 11, 0) > LINUX_VERSION_CODE
+	.gem_free_object_unlocked = evdi_gem_free_object,
+	.gem_vm_ops = &evdi_gem_vm_ops,
+	.gem_prime_get_sg_table = evdi_prime_get_sg_table,
+#endif
 	.gem_prime_import = evdi_gem_prime_import,
 	.prime_handle_to_fd = evdi_prime_handle_to_fd,
 	.prime_fd_to_handle = evdi_prime_fd_to_handle,
@@ -109,15 +114,13 @@ static int evdi_driver_open(struct drm_device *dev, struct drm_file *file)
 
 	mutex_init(&priv->lock);
 #ifdef EVDI_HAVE_XARRAY
-#ifdef EVDI_HAVE_XA_ALLOC_CYCLIC
 	xa_init_flags(&priv->bufid_to_handle, XA_FLAGS_ALLOC);
 	xa_init_flags(&priv->handle_to_bufid, XA_FLAGS_ALLOC);
 	priv->next_handle = 1;
 #else
-	xa_init(&priv->buffers);
-#endif
-#else
-	idr_init(&priv->buffers);
+	idr_init(&priv->bufid_to_handle);
+	idr_init(&priv->handle_to_bufid);
+	priv->next_handle = 1;
 #endif
 	priv->swap_rr = 0;
 	priv->pending_swaps = 0;
@@ -147,14 +150,11 @@ static void evdi_driver_postclose(struct drm_device *dev, struct drm_file *file)
 	if (priv) {
 		mutex_lock(&priv->lock);
 #ifdef EVDI_HAVE_XARRAY
-#ifdef EVDI_HAVE_XA_ALLOC_CYCLIC
 		xa_destroy(&priv->handle_to_bufid);
 		xa_destroy(&priv->bufid_to_handle);
 #else
-		xa_destroy(&priv->buffers);
-#endif
-#else
-		idr_destroy(&priv->buffers);
+		idr_destroy(&priv->handle_to_bufid);
+		idr_destroy(&priv->bufid_to_handle);
 #endif
 		WRITE_ONCE(priv->pending_swaps, 0);
 		memset(priv->last_swap_seq, 0, sizeof(priv->last_swap_seq));
