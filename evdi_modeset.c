@@ -183,6 +183,10 @@ int evdi_modeset_init(struct drm_device *dev)
 	dev->mode_config.preferred_depth = 24;
 	dev->mode_config.prefer_shadow = 1;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
+        dev->mode_config.allow_fb_modifiers = true;
+#endif
+
 	dev->mode_config.funcs = &evdi_mode_config_funcs;
 
 	ret = evdi_connector_init(dev, evdi);
