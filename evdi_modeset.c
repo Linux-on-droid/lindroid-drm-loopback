@@ -24,6 +24,13 @@ static const uint32_t evdi_formats[] = {
 	DRM_FORMAT_ARGB8888,
 };
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)
+static const uint64_t evdi_modifiers[] = {
+       DRM_FORMAT_MOD_LINEAR,
+       DRM_FORMAT_MOD_INVALID,
+};
+#endif
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
 static void evdi_pipe_enable(struct drm_simple_display_pipe *pipe,
 			     struct drm_crtc_state *crtc_state,
@@ -197,7 +204,12 @@ int evdi_modeset_init(struct drm_device *dev)
 	for (i = 0; i < LINDROID_MAX_CONNECTORS; i++) {
 		ret = drm_simple_display_pipe_init(dev, &evdi->pipe[i], &evdi_pipe_funcs,
 						   evdi_formats, ARRAY_SIZE(evdi_formats),
-						   NULL, evdi->connector[i]);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)
+						   evdi_modifiers,
+#else
+						   NULL,
+#endif
+						   evdi->connector[i]);
 		if (ret) {
 			evdi_err("Failed to initialize simple display pipe[%d]: %d", i, ret);
 			goto err_pipe;
