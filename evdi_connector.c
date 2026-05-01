@@ -77,7 +77,8 @@ static int evdi_connector_get_modes(struct drm_connector *connector)
 	drm_mode_probed_add(connector, mode);
 
 	evdi_debug("Created mode %ux%u@%uHz for device %d",
-		  evdi->width, evdi->height, evdi->refresh_rate, evdi->dev_index);
+		   mode->hdisplay, mode->vdisplay,
+		   drm_mode_vrefresh(mode), evdi->dev_index);
 
 	return 1;
 }
