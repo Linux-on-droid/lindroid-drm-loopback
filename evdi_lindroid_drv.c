@@ -157,7 +157,7 @@ static void evdi_driver_postclose(struct drm_device *dev, struct drm_file *file)
 		idr_destroy(&priv->bufid_to_handle);
 #endif
 		WRITE_ONCE(priv->pending_swaps, 0);
-		memset(priv->last_swap_seq, 0, sizeof(priv->last_swap_seq));
+		memset(priv->last_swap_payload, 0, sizeof(priv->last_swap_payload));
 		priv->swap_rr = 0;
 		mutex_unlock(&priv->lock);
 

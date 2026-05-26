@@ -201,7 +201,6 @@ int evdi_event_init(struct evdi_device *evdi)
 	atomic_set(&evdi->events.wake_pending, 0);
 
 	for (i = 0; i < LINDROID_MAX_CONNECTORS; i++) {
-		atomic64_set(&evdi->swap_mailbox[i].seq, 0);
 		atomic64_set(&evdi->swap_mailbox[i].payload, 0);
 		atomic_set(&evdi->swap_mailbox[i].poll_id, 0);
 		WRITE_ONCE(evdi->swap_mailbox[i].owner, NULL);
@@ -228,13 +227,14 @@ void evdi_swap_mailbox_invalidate_display(struct evdi_device *evdi, int display_
 
 	old_owner = READ_ONCE(mb->owner);
 
-	/* Mark as unstable, clear owner/payload, then mark stable again */
-	atomic64_inc(&mb->seq);
+	/* Set lock bit, clear all data */
+	atomic64_set(&mb->payload, 1ULL << 63);
+	evdi_smp_wmb();
 	WRITE_ONCE(mb->owner, NULL);
 	atomic_set(&mb->poll_id, 0);
-	atomic64_set(&mb->payload, 0);
 	evdi_smp_wmb();
-	atomic64_inc(&mb->seq);
+	/* Clear lock bit - payload (zero) now consistent */
+	atomic64_set(&mb->payload, 0);
 
 	priv = old_owner ? old_owner->driver_priv : NULL;
 	if (priv)
@@ -683,7 +683,7 @@ void evdi_event_cleanup_file(struct evdi_device *evdi, struct drm_file *file)
 	priv = file->driver_priv;
 	if (priv) {
 		WRITE_ONCE(priv->pending_swaps, 0);
-		memset(priv->last_swap_seq, 0, sizeof(priv->last_swap_seq));
+		memset(priv->last_swap_payload, 0, sizeof(priv->last_swap_payload));
 		priv->swap_rr = 0;
 	}
 

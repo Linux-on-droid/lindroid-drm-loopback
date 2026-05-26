@@ -239,8 +239,12 @@ struct evdi_swap {
 };
 
 struct evdi_swap_mailbox {
-	atomic64_t	seq;
-	atomic64_t	payload; /* (u32)id << 32 | (u32)display_id */
+	/*
+	 * Bit 63: lock bit
+	 * Bits 32-62: buffer id
+	 * Bits 0-31: display id
+	 */
+	atomic64_t	payload;
 	atomic_t	poll_id;
 	struct drm_file	*owner;
 };
@@ -248,6 +252,16 @@ struct evdi_swap_mailbox {
 static __always_inline u64 evdi_swap_pack(int id, int display_id)
 {
 	return ((u64)(u32)id << 32) | (u64)(u32)display_id;
+}
+
+static __always_inline u64 evdi_swap_pack_locked(int id, int display_id)
+{
+	return evdi_swap_pack(id, display_id) | (1ULL << 63);
+}
+
+static __always_inline bool evdi_swap_is_locked(u64 payload)
+{
+	return !!(payload & (1ULL << 63));
 }
 
 /*
@@ -278,7 +292,7 @@ struct evdi_file_priv {
 	struct idr handle_to_bufid;
 	u32 next_handle;
 #endif
-	u64 last_swap_seq[LINDROID_MAX_CONNECTORS];
+	u64 last_swap_payload[LINDROID_MAX_CONNECTORS];
 	u8 swap_rr;
 	unsigned long pending_swaps;
 };

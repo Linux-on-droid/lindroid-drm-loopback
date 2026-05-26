@@ -489,29 +489,14 @@ int evdi_ioctl_connect(struct drm_device *dev, void *data, struct drm_file *file
 	return 0;
 }
 
-static __always_inline u64 evdi_swap_mailbox_seq_current(struct evdi_device *evdi,
-							 int display_id)
-{
-	if (unlikely(!evdi))
-		return 0;
-	if (unlikely(display_id < 0 || display_id >= LINDROID_MAX_CONNECTORS))
-		return 0;
-
-	return (u64)atomic64_read(&evdi->swap_mailbox[display_id].seq);
-}
-
 static __always_inline bool evdi_swap_mailbox_read_stable(struct evdi_device *evdi,
 							 int display_id,
-							 u64 *seq,
 							 u64 *payload,
 							 int *poll_id,
 							 struct drm_file **owner)
 {
 	struct evdi_swap_mailbox *mb;
-	u64 s1, s2, p;
-	int pid;
-	struct drm_file *o;
-	int tries = 0;
+	u64 v;
 
 	if (unlikely(!evdi))
 		return false;
@@ -521,31 +506,18 @@ static __always_inline bool evdi_swap_mailbox_read_stable(struct evdi_device *ev
 
 	mb = &evdi->swap_mailbox[display_id];
 
-	for (;;) {
-		s1 = (u64)atomic64_read(&mb->seq);
-		if (s1 & 1)
-			goto retry;
+	v = smp_load_acquire(&mb->payload.counter);
+	if (evdi_swap_is_locked(v))
+		return false;
 
-		evdi_smp_rmb();
-		p = (u64)atomic64_read(&mb->payload);
-		pid = atomic_read(&mb->poll_id);
-		o = READ_ONCE(mb->owner);
-		evdi_smp_rmb();
+	*poll_id = atomic_read(&mb->poll_id);
+	*owner = READ_ONCE(mb->owner);
 
-		s2 = (u64)atomic64_read(&mb->seq);
-		if (likely(s1 == s2 && !(s2 & 1)))
-			break;
+	//Re-read if write occurred mid read (cheaper than a seq counter)
+	if (atomic64_read(&mb->payload) != v)
+		return false;
 
-retry:
-		if (++tries >= 8)
-			return false;
-		cpu_relax();
-	}
-
-	*seq = s2;
-	*payload = p;
-	*poll_id = pid;
-	*owner = o;
+	*payload = v;
 	return true;
 }
 
@@ -558,9 +530,9 @@ static __always_inline bool evdi_swap_try_dequeue_display(struct evdi_device *ev
 {
 	struct drm_file *owner;
 	int poll_id;
-	u64 seq, payload, latest;
+	u64 payload;
 
-	if (!evdi_swap_mailbox_read_stable(evdi, d, &seq, &payload, &poll_id,
+	if (!evdi_swap_mailbox_read_stable(evdi, d, &payload, &poll_id,
 					   &owner))
 		return false;
 
@@ -569,14 +541,12 @@ static __always_inline bool evdi_swap_try_dequeue_display(struct evdi_device *ev
 		return false;
 	}
 
-	if (seq == priv->last_swap_seq[d]) {
-		latest = evdi_swap_mailbox_seq_current(evdi, d);
-		if (!(latest & 1) && latest == seq)
-			clear_bit(d, &priv->pending_swaps);
+	if (payload == priv->last_swap_payload[d]) {
+		clear_bit(d, &priv->pending_swaps);
 		return false;
 	}
 
-	priv->last_swap_seq[d] = seq;
+	priv->last_swap_payload[d] = payload;
 	priv->swap_rr = (u8)(d + 1);
 	if (priv->swap_rr >= LINDROID_MAX_CONNECTORS)
 		priv->swap_rr = 0;
@@ -585,10 +555,7 @@ static __always_inline bool evdi_swap_try_dequeue_display(struct evdi_device *ev
 	out->display_id = (int)(u32)payload;
 	*out_poll_id = poll_id;
 
-	latest = evdi_swap_mailbox_seq_current(evdi, d);
-	if (!(latest & 1) && latest == seq)
-		clear_bit(d, &priv->pending_swaps);
-
+	clear_bit(d, &priv->pending_swaps);
 	return true;
 }
 
@@ -1212,12 +1179,10 @@ int evdi_queue_swap_event(struct evdi_device *evdi, int id, int display_id,
 	poll_id = atomic_inc_return(&evdi->events.next_poll_id);
 	priv = owner ? owner->driver_priv : NULL;
 
-	atomic64_inc(&mb->seq); // odd
+	atomic64_set(&mb->payload, evdi_swap_pack_locked(id, display_id));
 	WRITE_ONCE(mb->owner, owner);
 	atomic_set(&mb->poll_id, poll_id);
-	atomic64_set(&mb->payload, payload);
-	evdi_smp_wmb();
-	atomic64_inc(&mb->seq); // even
+	smp_store_release(&mb->payload.counter, payload);
 
 	EVDI_PERF_INC64(&evdi_perf.swap_updates);
 
