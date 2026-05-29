@@ -84,6 +84,11 @@ struct drm_evdi_vsync {
     __u32 display_id;
 };
 
+struct drm_evdi_set_power_mode {
+    __s32 display_id;
+    __s32 power_mode;
+};
+
 #define DRM_EVDI_CONNECT                    0x00
 #define DRM_EVDI_GRABPIX                    0x02  /* Unused by create-disp */
 #define DRM_EVDI_ENABLE_CURSOR_EVENTS       0x03  /* Unused by create-disp */
@@ -96,6 +101,7 @@ struct drm_evdi_vsync {
 #define DRM_EVDI_GBM_CREATE_BUFF            0x0C  /* Unused by create-disp */
 #define DRM_EVDI_GBM_CREATE_BUFF_CALLBACK   0x0D
 #define DRM_EVDI_VSYNC						0x0E
+#define DRM_EVDI_SET_POWER_MODE             0x0F
 
 #define DRM_IOCTL_EVDI_CONNECT DRM_IOWR(DRM_COMMAND_BASE + \
 	DRM_EVDI_CONNECT, struct drm_evdi_connect)
@@ -123,5 +129,8 @@ struct drm_evdi_vsync {
 
 #define DRM_IOCTL_EVDI_VSYNC DRM_IOW(DRM_COMMAND_BASE + \
 	DRM_EVDI_VSYNC, struct drm_evdi_vsync)
+
+#define DRM_IOCTL_EVDI_SET_POWER_MODE DRM_IOW(DRM_COMMAND_BASE + \
+	DRM_EVDI_SET_POWER_MODE, struct drm_evdi_set_power_mode)
 
 #endif /* __UAPI_EVDI_DRM_H__ */

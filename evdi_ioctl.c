@@ -1162,6 +1162,9 @@ int evdi_queue_swap_event(struct evdi_device *evdi, int id, int display_id,
 	if (unlikely(!READ_ONCE(evdi->displays[display_id].connected)))
 		return -ENODEV;
 
+	if (unlikely(!READ_ONCE(evdi->displays[display_id].power_mode)))
+		return -ENODEV;
+
 	current_generation = READ_ONCE(evdi->displays[display_id].generation);
 	if (unlikely(current_generation != generation))
 		return -ESTALE;
@@ -1193,6 +1196,28 @@ int evdi_queue_swap_event(struct evdi_device *evdi, int id, int display_id,
 
 	// Swap events do not use the standard event queue, so use a mailbox-specific helper
 	evdi_wakeup_mailbox_pollers(evdi);
+
+	return 0;
+}
+
+int evdi_ioctl_set_power_mode(struct drm_device *dev,
+			      void *data,
+			      struct drm_file *file)
+{
+	struct evdi_device *evdi = dev->dev_private;
+	struct drm_evdi_set_power_mode *args = data;
+
+	if (unlikely(args->display_id < 0 ||
+		     args->display_id >= LINDROID_MAX_CONNECTORS))
+		return -EINVAL;
+
+	if (args->power_mode != 0 && args->power_mode != 1)
+		return -EINVAL;
+
+	mutex_lock(&evdi->config_mutex);
+	WRITE_ONCE(evdi->displays[args->display_id].power_mode,
+		   args->power_mode);
+	mutex_unlock(&evdi->config_mutex);
 
 	return 0;
 }
@@ -1235,6 +1260,9 @@ int evdi_ioctl_vsync(struct drm_device *dev,
 		return -ENODEV;
 
 	slot = vs->display_id;
+
+	if (unlikely(!READ_ONCE(evdi->displays[slot].power_mode)))
+		return 0;
 
 	if (slot < 0 || slot >= LINDROID_MAX_CONNECTORS)
 		return -EINVAL;

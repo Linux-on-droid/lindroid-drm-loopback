@@ -60,6 +60,8 @@ static const struct drm_ioctl_desc evdi_ioctls[] = {
 			 EVDI_IOCTL_FLAGS),
 	DRM_IOCTL_DEF_DRV(EVDI_VSYNC, evdi_ioctl_vsync,
 			DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(EVDI_SET_POWER_MODE, evdi_ioctl_set_power_mode,
+			 EVDI_IOCTL_FLAGS),
 };
 
 static struct drm_driver evdi_driver = {
@@ -180,6 +182,7 @@ int evdi_device_init(struct evdi_device *evdi, struct platform_device *pdev)
 		evdi->displays[i].height = 1080;
 		evdi->displays[i].refresh_rate = 60;
 		evdi->displays[i].generation = 1;
+		evdi->displays[i].power_mode = 1;
 		evdi->connector[i] = NULL;
 	}
 	evdi->drm_client = NULL;

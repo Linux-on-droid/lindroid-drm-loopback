@@ -87,6 +87,17 @@ static void evdi_pipe_update(struct drm_simple_display_pipe *pipe,
 	if (unlikely(slot < 0 || slot >= LINDROID_MAX_CONNECTORS))
 		return;
 
+	if (unlikely(!READ_ONCE(evdi->displays[slot].power_mode))) {
+		if (crtc->state && crtc->state->event) {
+			event = crtc->state->event;
+			crtc->state->event = NULL;
+			spin_lock_irqsave(&crtc->dev->event_lock, flags);
+			drm_crtc_send_vblank_event(crtc, event);
+			spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
+		}
+		return;
+	}
+
 	if (crtc->state && crtc->state->event) {
 		event = crtc->state->event;
 		crtc->state->event = NULL;

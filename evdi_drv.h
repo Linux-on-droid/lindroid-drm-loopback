@@ -160,7 +160,7 @@ struct evdi_gralloc_buf_user {
 };
 
 /* Must be +1 poll event types */
-#define EVDI_EVENT_TYPE_MAX 6
+#define EVDI_EVENT_TYPE_MAX 7
 
 struct evdi_event_pool {
 	struct kmem_cache *cache;
@@ -279,6 +279,7 @@ struct evdi_display {
 	uint32_t height;
 	uint32_t refresh_rate;
 	uint32_t generation;
+	int power_mode;
 };
 
 struct evdi_file_priv {
@@ -397,6 +398,7 @@ int evdi_queue_swap_event(struct evdi_device *evdi, int id, int display_id, u32 
 			struct drm_file *owner);
 int evdi_queue_destroy_event(struct evdi_device *evdi, int id, struct drm_file *owner);
 int evdi_ioctl_vsync(struct drm_device *dev, void *data, struct drm_file *file);
+int evdi_ioctl_set_power_mode(struct drm_device *dev, void *data, struct drm_file *file);
 
 /* evdi_event.c */
 int evdi_event_init(struct evdi_device *evdi);
