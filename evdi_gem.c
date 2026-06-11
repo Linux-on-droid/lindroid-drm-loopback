@@ -561,6 +561,12 @@ void evdi_gem_free_object(struct drm_gem_object *gem_obj)
 		obj->dmabuf_file = NULL;
 	}
 
+	if (obj->sg) {
+		sg_free_table(obj->sg);
+		kfree(obj->sg);
+		obj->sg = NULL;
+	}
+
 	if (obj->pages)
 		evdi_gem_put_pages(obj);
 
@@ -586,10 +592,15 @@ struct sg_table *evdi_prime_get_sg_table(struct drm_gem_object *obj)
 	if (unlikely(!bo->pages))
 		return ERR_PTR(-EINVAL);
 
+	if (bo->sg)
+		return bo->sg;
+
 #if KERNEL_VERSION(5, 10, 0) <= LINUX_VERSION_CODE
-	return drm_prime_pages_to_sg(obj->dev, bo->pages,
-				   bo->base.size >> PAGE_SHIFT);
+	bo->sg = drm_prime_pages_to_sg(obj->dev, bo->pages,
+				       bo->base.size >> PAGE_SHIFT);
 #else
-	return drm_prime_pages_to_sg(bo->pages, bo->base.size >> PAGE_SHIFT);
+	bo->sg = drm_prime_pages_to_sg(bo->pages, bo->base.size >> PAGE_SHIFT);
 #endif
+
+	return bo->sg;
 }
