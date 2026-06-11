@@ -92,62 +92,19 @@ static unsigned int evdi_fb_cpp(u32 format)
 	return info->cpp[0];
 }
 
-static int evdi_fb_calc_size(const struct drm_mode_fb_cmd2 *mode_cmd,
-			     u32 *out_pitch, size_t *out_size)
-{
-	const struct drm_format_info *info = drm_format_info(mode_cmd->pixel_format);
-	u32 pitch, cpp;
-	size_t last_lines, total, tail;
-
-	if (!info || info->num_planes != 1)
-		return -EINVAL;
-
-	cpp = info->cpp[0];
-	if (!cpp)
-		return -EINVAL;
-
-	if (!mode_cmd->width || !mode_cmd->height)
-		return -EINVAL;
-
-	if (mode_cmd->pitches[0]) {
-		pitch = mode_cmd->pitches[0];
-		if (pitch < mode_cmd->width * cpp)
-			return -EINVAL;
-	} else {
-		pitch = mode_cmd->width * cpp;
-	}
-
-	if (mode_cmd->height == 0)
-		return -EINVAL;
-
-	if (check_mul_overflow((size_t)(mode_cmd->height - 1), (size_t)pitch, &last_lines))
-		return -EOVERFLOW;
-
-	tail = (size_t)mode_cmd->width * cpp;
-	if (check_add_overflow((size_t)mode_cmd->offsets[0], last_lines, &total))
-		return -EOVERFLOW;
-
-	if (check_add_overflow(total, tail, &total))
-		return -EOVERFLOW;
-
-	*out_pitch = pitch;
-	*out_size = total;
-	return 0;
-}
-
-static struct evdi_gem_object *evdi_fb_acquire_bo(struct drm_device *dev,
-						  struct drm_file *file,
+static struct evdi_gem_object *evdi_fb_acquire_bo(struct drm_file *file,
 						  const struct drm_mode_fb_cmd2 *mode_cmd)
 {
-	size_t size;
-	u32 validated_pitch;
-	int ret;
+	struct drm_gem_object *gem_obj;
 
-	ret = evdi_fb_calc_size(mode_cmd, &validated_pitch, &size);
-	if (ret)
+	if (!mode_cmd || !file)
 		return NULL;
 
-	return evdi_gem_alloc_object(dev, size);
+	gem_obj = drm_gem_object_lookup(file, mode_cmd->handles[0]);
+	if (!gem_obj)
+		return NULL;
+
+	return to_evdi_gem(gem_obj);
 }
 
 static int evdi_fb_init_core(struct drm_device *dev,
@@ -188,7 +145,7 @@ struct drm_framebuffer *evdi_fb_user_fb_create(struct drm_device *dev,
 	struct evdi_gem_object *bo;
 	int ret;
 
-	bo = evdi_fb_acquire_bo(dev, file, mode_cmd);
+	bo = evdi_fb_acquire_bo(file, mode_cmd);
 	if (!bo)
 		return ERR_PTR(-ENOENT);
 
@@ -201,7 +158,7 @@ struct drm_framebuffer *evdi_fb_user_fb_create(struct drm_device *dev,
 	efb->obj = bo;
 	efb->owner = file;
 	efb->active = true;
-	efb->gralloc_buf_id = mode_cmd->handles[0];
+	efb->gralloc_buf_id = bo->gralloc_id;
 	efb->bound_display_id = -1;
 	efb->bound_generation = 0;
 

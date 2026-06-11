@@ -229,9 +229,14 @@ struct evdi_gem_object {
 #endif
 	bool vmap_is_vmram;
 	struct sg_table *sg;
+	struct file* dmabuf_file;
+	u32 gralloc_id;
 };
 
-#define to_evdi_bo(x) container_of(x, struct evdi_gem_object, base)
+static inline struct evdi_gem_object *to_evdi_gem(struct drm_gem_object *obj)
+{
+	return container_of(obj, struct evdi_gem_object, base);
+}
 
 struct evdi_swap {
 	int id;
