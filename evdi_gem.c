@@ -113,24 +113,6 @@ static bool evdi_drm_gem_object_use_import_attach(struct drm_gem_object *obj)
 	return true;
 }
 
-uint32_t evdi_gem_object_handle_lookup(struct drm_file *filp, struct drm_gem_object *obj)
-{
-	uint32_t it_handle = 0;
-	struct drm_gem_object *it_obj = NULL;
-
-	spin_lock(&filp->table_lock);
-	idr_for_each_entry(&filp->object_idr, it_obj, it_handle) {
-		if (it_obj == obj)
-			break;
-	}
-	spin_unlock(&filp->table_lock);
-
-	if (!it_obj)
-		it_handle = 0;
-
-	return it_handle;
-}
-
 struct evdi_gem_object *evdi_gem_alloc_object(struct drm_device *dev, size_t size)
 {
 	struct evdi_gem_object *obj;
