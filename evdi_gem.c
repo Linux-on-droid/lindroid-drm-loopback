@@ -446,11 +446,26 @@ int evdi_prime_fd_to_handle(struct drm_device *dev,
 			    uint32_t *handle)
 {
 	struct evdi_gem_object *obj;
+	struct drm_gem_object *gem_obj;
+	struct dma_buf *dma_buf;
 	struct file *dmabuf_file;
 	int ret, id;
 
 	if (!handle || prime_fd < 0)
 		return -EINVAL;
+
+	dma_buf = dma_buf_get(prime_fd);
+	if (!IS_ERR(dma_buf)) {
+		gem_obj = evdi_gem_prime_import(dev, dma_buf);
+		dma_buf_put(dma_buf);
+
+		if (IS_ERR(gem_obj))
+			return PTR_ERR(gem_obj);
+
+		ret = drm_gem_handle_create(file_priv, gem_obj, handle);
+		drm_gem_object_put(gem_obj);
+		return ret;
+	}
 
 	dmabuf_file = fget(prime_fd);
 	if (!dmabuf_file)
